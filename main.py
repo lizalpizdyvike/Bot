@@ -15,7 +15,7 @@ from urllib.parse import quote
 
 # ================== НАСТРОЙКИ ==================
 TELEGRAM_TOKEN = "8319221865:AAGy4cA5k9XRWHV4q4zcbieJ9r_KE-aUFjQ"
-OWNER_ID = 7616322842  # 👈 ТВОЙ ID
+OWNER_ID = 7616322842
 TEXT_API_URL = "http://api.onlysq.ru/ai/v2"
 MODEL_TEXT = "gpt-4o-mini"
 
@@ -43,14 +43,47 @@ def save_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-def add_user(user_id: int):
+async def add_user(user):
     data = load_json(DB_FILE)
-    uid = str(user_id)
-    is_new = uid not in data
-    if is_new:
-        data[uid] = {"joined": datetime.now().isoformat()}
-        save_json(DB_FILE, data)
-    return is_new
+    uid = str(user.id)
+
+    if uid in data:
+        return
+
+    # сохраняем пользователя
+    data[uid] = {"joined": datetime.now().isoformat()}
+    save_json(DB_FILE, data)
+
+    # уведомление овнера
+    text = (
+        "👤 *Новый пользователь*\n\n"
+        f"Имя: {user.full_name}\n"
+        f"Username: @{user.username if user.username else 'нет'}\n"
+        f"ID: `{user.id}`"
+    )
+
+    try:
+        photos = await bot.get_user_profile_photos(user.id, limit=1)
+        if photos.total_count > 0:
+            file_id = photos.photos[0][0].file_id
+            await bot.send_photo(
+                OWNER_ID,
+                file_id,
+                caption=text,
+                parse_mode="Markdown"
+            )
+        else:
+            await bot.send_message(
+                OWNER_ID,
+                text,
+                parse_mode="Markdown"
+            )
+    except:
+        await bot.send_message(
+            OWNER_ID,
+            text,
+            parse_mode="Markdown"
+        )
 
 def get_all_users():
     return list(load_json(DB_FILE).keys())
@@ -93,7 +126,7 @@ async def ai_request(uid, text):
             data = await r.json()
             return data["choices"][0]["message"]["content"]
 
-# ================== ЛИМИТ КАРТИНОК ==================
+# ================== IMAGE ==================
 def can_generate_image(uid):
     data = load_json(IMAGE_LIMIT_FILE)
     uid = str(uid)
@@ -109,7 +142,6 @@ def can_generate_image(uid):
     save_json(IMAGE_LIMIT_FILE, data)
     return True
 
-# ================== IMAGE ==================
 async def generate_image(prompt):
     url = f"https://image.pollinations.ai/prompt/{quote(prompt)}"
     async with aiohttp.ClientSession() as s:
@@ -119,119 +151,70 @@ async def generate_image(prompt):
 # ================== START ==================
 @dp.message(CommandStart())
 async def start(m: Message):
-    is_new = add_user(m.from_user.id)
-
-    if is_new:
-        text = (
-            "👤 *Новый пользователь*\n\n"
-            f"Имя: {m.from_user.full_name}\n"
-            f"Username: @{m.from_user.username if m.from_user.username else 'нет'}\n"
-            f"ID: `{m.from_user.id}`"
-        )
-
-        try:
-            photos = await bot.get_user_profile_photos(m.from_user.id, limit=1)
-            if photos.total_count > 0:
-                file_id = photos.photos[0][0].file_id
-                await bot.send_photo(OWNER_ID, file_id, caption=text, parse_mode="Markdown")
-            else:
-                await bot.send_message(OWNER_ID, text, parse_mode="Markdown")
-        except:
-            await bot.send_message(OWNER_ID, text, parse_mode="Markdown")
+    await add_user(m.from_user)
 
     await m.answer(
-        "👋 Привет!\n\n"
-        "Я умею:\n"
-        "🤖 Отвечать как AI\n"
-        "📷 Делать QR-коды\n"
-        "🛠 Создавать Telegram-ботов\n"
-        "🖼️ Генерировать изображения\n\n"
-        "Выбери кнопку ниже 👇",
+        "👋 Привет!\n\nВыбери кнопку ниже 👇",
         reply_markup=main_menu(m.from_user.id)
     )
 
 # ================== CALLBACKS ==================
 @dp.callback_query(F.data == "back")
 async def back(c):
+    await add_user(c.from_user)
     user_mode[c.from_user.id] = "menu"
     broadcast_state.pop(c.from_user.id, None)
     await c.message.edit_text("Главное меню 👇", reply_markup=main_menu(c.from_user.id))
 
 @dp.callback_query(F.data == "ai")
 async def ai_mode(c):
+    await add_user(c.from_user)
     user_mode[c.from_user.id] = "ai"
-    await c.message.edit_text(
-        "🤖 *AI чат*\n\n"
-        "Просто напиши любой вопрос или текст — я отвечу.",
-        parse_mode="Markdown",
-        reply_markup=back_menu()
-    )
+    await c.message.edit_text("🤖 Напиши сообщение", reply_markup=back_menu())
 
 @dp.callback_query(F.data == "qr")
 async def qr_mode(c):
+    await add_user(c.from_user)
     user_mode[c.from_user.id] = "qr"
-    await c.message.edit_text(
-        "📷 *QR-код*\n\n"
-        "Отправь текст или ссылку — я сделаю QR-код.",
-        parse_mode="Markdown",
-        reply_markup=back_menu()
-    )
+    await c.message.edit_text("📷 Отправь текст", reply_markup=back_menu())
 
 @dp.callback_query(F.data == "image")
 async def image_mode(c):
+    await add_user(c.from_user)
     user_mode[c.from_user.id] = "image"
-    await c.message.edit_text(
-        "🖼️ *Генерация фото*\n\n"
-        "Опиши изображение словами.\n"
-        "Пример: `серый кот на диване`",
-        parse_mode="Markdown",
-        reply_markup=back_menu()
-    )
+    await c.message.edit_text("🖼 Опиши изображение", reply_markup=back_menu())
 
 @dp.callback_query(F.data == "create_bot")
 async def create_bot(c):
+    await add_user(c.from_user)
     user_mode[c.from_user.id] = "create_bot"
     bot_create_state[c.from_user.id] = {"step": 1}
-    await c.message.edit_text(
-        "🛠 *Создание бота*\n\n"
-        "1️⃣ Отправь токен бота\n"
-        "2️⃣ Потом опишешь, что он должен делать",
-        parse_mode="Markdown",
-        reply_markup=back_menu()
-    )
+    await c.message.edit_text("🔑 Отправь токен бота", reply_markup=back_menu())
 
-# ================== ADMIN ==================
 @dp.callback_query(F.data == "admin")
 async def admin(c):
-    if c.from_user.id != OWNER_ID:
-        return
-    await c.message.edit_text(
-        "👑 *Admin-панель*",
-        parse_mode="Markdown",
-        reply_markup=admin_menu()
-    )
+    await add_user(c.from_user)
+    if c.from_user.id == OWNER_ID:
+        await c.message.edit_text("👑 Admin", reply_markup=admin_menu())
 
 @dp.callback_query(F.data == "broadcast")
 async def broadcast_start(c):
+    await add_user(c.from_user)
     if c.from_user.id != OWNER_ID:
         return
     broadcast_state[c.from_user.id] = "text"
-    await c.message.edit_text(
-        "📢 Отправь текст рассылки.\n"
-        "Сообщение получат ВСЕ пользователи, которые нажали /start.",
-        reply_markup=back_menu()
-    )
+    await c.message.edit_text("📢 Отправь текст рассылки", reply_markup=back_menu())
 
 # ================== TEXT ==================
 @dp.message(F.text)
 async def text_handler(m: Message):
+    await add_user(m.from_user)
+
     uid = m.from_user.id
     mode = user_mode.get(uid)
 
-    # --- рассылка ---
     if broadcast_state.get(uid) == "text":
-        users = get_all_users()
-        for u in users:
+        for u in get_all_users():
             try:
                 await bot.send_message(int(u), m.text)
                 await asyncio.sleep(0.05)
@@ -241,7 +224,6 @@ async def text_handler(m: Message):
         await m.answer("✅ Рассылка завершена", reply_markup=main_menu(uid))
         return
 
-    # --- image ---
     if mode == "image":
         if not can_generate_image(uid):
             await m.answer("❌ Лимит 5 изображений в день")
@@ -250,7 +232,6 @@ async def text_handler(m: Message):
         await m.answer_photo(BufferedInputFile(img, "image.png"))
         return
 
-    # --- qr ---
     if mode == "qr":
         img = qrcode.make(m.text)
         bio = BytesIO()
@@ -259,13 +240,12 @@ async def text_handler(m: Message):
         await m.answer_photo(BufferedInputFile(bio.read(), "qr.png"))
         return
 
-    # --- create bot ---
     if mode == "create_bot":
         state = bot_create_state[uid]
         if state["step"] == 1:
             state["token"] = m.text
             state["step"] = 2
-            await m.answer("📝 Теперь опиши, что должен делать бот")
+            await m.answer("📝 Опиши, что должен делать бот")
             return
         code = await ai_request(uid, f"Создай бота aiogram 3. {m.text}")
         await m.answer_document(BufferedInputFile(code.encode(), "bot.py"))
@@ -273,7 +253,6 @@ async def text_handler(m: Message):
         user_mode[uid] = "menu"
         return
 
-    # --- ai ---
     if mode == "ai":
         reply = await ai_request(uid, m.text)
         await m.answer(reply)
