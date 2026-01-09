@@ -10,229 +10,279 @@ from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 import qrcode
 from io import BytesIO
-import re
+from zoneinfo import ZoneInfo
+from urllib.parse import quote
 
+# ================== НАСТРОЙКИ ==================
 TELEGRAM_TOKEN = "8319221865:AAGy4cA5k9XRWHV4q4zcbieJ9r_KE-aUFjQ"
-API_URL = "http://api.onlysq.ru/ai/v2"
-MODEL = "gpt-4o-mini"
-OWNER_ID = 7616322842
+OWNER_ID = 7616322842  # 👈 ТВОЙ ID
+TEXT_API_URL = "http://api.onlysq.ru/ai/v2"
+MODEL_TEXT = "gpt-4o-mini"
 
 DB_FILE = "chat_history.json"
-MAX_MESSAGE_LENGTH = 4000
+IMAGE_LIMIT_FILE = "image_limits.json"
+MSK = ZoneInfo("Europe/Moscow")
 
 logging.basicConfig(level=logging.INFO)
+
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
-user_mode = {}
 
-def load_db():
-    if os.path.exists(DB_FILE):
-        with open(DB_FILE, 'r', encoding='utf-8') as f:
+user_mode = {}
+bot_create_state = {}
+broadcast_state = {}
+
+# ================== JSON ==================
+def load_json(path):
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
-def save_db(data):
-    with open(DB_FILE, 'w', encoding='utf-8') as f:
+def save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-def save_message(user_id, role, content):
-    db = load_db()
+def add_user(user_id: int):
+    data = load_json(DB_FILE)
     uid = str(user_id)
-    if uid not in db:
-        db[uid] = []
-    db[uid].append({
-        "role": role,
-        "content": content,
-        "timestamp": datetime.now().isoformat()
-    })
-    save_db(db)
+    is_new = uid not in data
+    if is_new:
+        data[uid] = {"joined": datetime.now().isoformat()}
+        save_json(DB_FILE, data)
+    return is_new
 
-def get_history(user_id, limit=30):
-    db = load_db()
-    uid = str(user_id)
-    if uid not in db:
-        return []
-    return [{"role": m["role"], "content": m["content"]} for m in db[uid][-limit:]]
+def get_all_users():
+    return list(load_json(DB_FILE).keys())
 
-def clear_history(user_id):
-    db = load_db()
-    db[str(user_id)] = []
-    save_db(db)
-
-def main_menu():
+# ================== КЛАВИАТУРЫ ==================
+def main_menu(user_id: int):
     kb = InlineKeyboardBuilder()
-    kb.button(text="🤖 AI", callback_data="chat_ai")
-    kb.button(text="📷 QR", callback_data="qr_mode")
+    kb.button(text="🤖 AI", callback_data="ai")
+    kb.button(text="📷 QR", callback_data="qr")
+    kb.button(text="🛠 Создать бота", callback_data="create_bot")
+    kb.button(text="🖼️ Генерация фото", callback_data="image")
+    if user_id == OWNER_ID:
+        kb.button(text="👑 Admin", callback_data="admin")
     kb.adjust(1)
     return kb.as_markup()
 
 def back_menu():
     kb = InlineKeyboardBuilder()
-    kb.button(text="⬅️ Назад", callback_data="back_menu")
+    kb.button(text="⬅️ Назад", callback_data="back")
+    return kb.as_markup()
+
+def admin_menu():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📢 Рассылка", callback_data="broadcast")
+    kb.button(text="⬅️ Назад", callback_data="back")
     kb.adjust(1)
     return kb.as_markup()
 
-def split_message(text):
-    if len(text) <= MAX_MESSAGE_LENGTH:
-        return [text]
-    parts = []
-    while text:
-        if len(text) <= MAX_MESSAGE_LENGTH:
-            parts.append(text)
-            break
-        pos = text.rfind('\n', 0, MAX_MESSAGE_LENGTH)
-        if pos == -1:
-            pos = text.rfind(' ', 0, MAX_MESSAGE_LENGTH)
-        if pos == -1:
-            pos = MAX_MESSAGE_LENGTH
-        parts.append(text[:pos])
-        text = text[pos:].lstrip()
-    return parts
-
-async def send_long(message, text):
-    for i, part in enumerate(split_message(text)):
-        if i:
-            await asyncio.sleep(0.4)
-        await message.answer(part)
-
-async def get_ai_response(uid, text):
+# ================== AI ==================
+async def ai_request(uid, text):
     headers = {"Authorization": "Bearer openai"}
-    history = get_history(uid, 25)
-
-    messages = [
-        {"role": "system", "content": "Отвечай чётко. Если просят код — только код в ```"}
-    ]
-    messages.extend(history)
-    messages.append({"role": "user", "content": text})
-
     payload = {
-        "model": MODEL,
-        "request": {"messages": messages, "temperature": 0.7}
+        "model": MODEL_TEXT,
+        "request": {
+            "messages": [{"role": "user", "content": text}]
+        }
     }
+    async with aiohttp.ClientSession() as s:
+        async with s.post(TEXT_API_URL, json=payload, headers=headers) as r:
+            data = await r.json()
+            return data["choices"][0]["message"]["content"]
 
-    for _ in range(2):
-        try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12)) as s:
-                async with s.post(API_URL, json=payload, headers=headers) as r:
-                    if r.status != 200:
-                        continue
-                    data = await r.json()
-                    reply = data["choices"][0]["message"]["content"]
-                    save_message(uid, "user", text)
-                    save_message(uid, "assistant", reply)
-                    return reply
-        except Exception as e:
-            logging.error(e)
+# ================== ЛИМИТ КАРТИНОК ==================
+def can_generate_image(uid):
+    data = load_json(IMAGE_LIMIT_FILE)
+    uid = str(uid)
+    today = datetime.now(MSK).strftime("%Y-%m-%d")
 
-    return "Ошибка. Попробуйте позже."
+    if uid not in data or data[uid]["date"] != today:
+        data[uid] = {"date": today, "count": 0}
 
-def extract_code(text: str):
-    block = re.findall(r"```(?:[\w]+)?\n([\s\S]*?)```", text)
-    if block:
-        return block[0].strip()
-    return None
+    if data[uid]["count"] >= 5:
+        return False
 
-async def notify_owner(message: Message):
-    try:
-        user = message.from_user
-        photos = await bot.get_user_profile_photos(user.id, limit=1)
-        caption = (
-            "Новый пользователь\n\n"
-            f"Имя: {user.full_name}\n"
-            f"Username: @{user.username if user.username else 'нет'}\n"
-            f"ID: {user.id}"
-        )
-        if photos.total_count > 0:
-            file_id = photos.photos[0][0].file_id
-            await bot.send_photo(OWNER_ID, file_id, caption=caption)
-        else:
-            await bot.send_message(OWNER_ID, caption)
-    except:
-        pass
+    data[uid]["count"] += 1
+    save_json(IMAGE_LIMIT_FILE, data)
+    return True
 
+# ================== IMAGE ==================
+async def generate_image(prompt):
+    url = f"https://image.pollinations.ai/prompt/{quote(prompt)}"
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url) as r:
+            return await r.read()
+
+# ================== START ==================
 @dp.message(CommandStart())
-async def start(message: Message):
-    user_mode[message.from_user.id] = "menu"
-    await notify_owner(message)
-    await message.answer("Готов.", reply_markup=main_menu())
+async def start(m: Message):
+    is_new = add_user(m.from_user.id)
 
-@dp.callback_query(F.data == "chat_ai")
-async def chat_ai(callback):
-    user_mode[callback.from_user.id] = "chat"
-    await callback.message.edit_text(".", reply_markup=back_menu())
+    if is_new:
+        text = (
+            "👤 *Новый пользователь*\n\n"
+            f"Имя: {m.from_user.full_name}\n"
+            f"Username: @{m.from_user.username if m.from_user.username else 'нет'}\n"
+            f"ID: `{m.from_user.id}`"
+        )
 
-@dp.callback_query(F.data == "qr_mode")
-async def qr_mode(callback):
-    user_mode[callback.from_user.id] = "qr"
-    await callback.message.edit_text(".", reply_markup=back_menu())
+        try:
+            photos = await bot.get_user_profile_photos(m.from_user.id, limit=1)
+            if photos.total_count > 0:
+                file_id = photos.photos[0][0].file_id
+                await bot.send_photo(OWNER_ID, file_id, caption=text, parse_mode="Markdown")
+            else:
+                await bot.send_message(OWNER_ID, text, parse_mode="Markdown")
+        except:
+            await bot.send_message(OWNER_ID, text, parse_mode="Markdown")
 
-@dp.callback_query(F.data == "back_menu")
-async def back_menu_btn(callback):
-    user_mode[callback.from_user.id] = "menu"
-    await callback.message.edit_text("Готов.", reply_markup=main_menu())
-
-@dp.message(F.text == "/clear")
-async def clear_cmd(message: Message):
-    clear_history(message.from_user.id)
-    user_mode[message.from_user.id] = "chat"
-    await message.answer("Очищено.")
-
-@dp.message(F.text == "/history")
-async def history_cmd(message: Message):
-    hist = get_history(message.from_user.id, 12)
-    if not hist:
-        await message.answer("Пусто.")
-        return
-    text = ""
-    for m in hist:
-        icon = "👤" if m["role"] == "user" else "🤖"
-        text += f"{icon} {m['content'][:300]}\n\n"
-    await send_long(message, text)
-
-async def send_qr(message: Message, text: str):
-    img = qrcode.make(text)
-    bio = BytesIO()
-    bio.name = "qr.png"
-    img.save(bio, "PNG")
-    bio.seek(0)
-    await message.answer_photo(
-        BufferedInputFile(bio.read(), filename="qr.png"),
-        caption="QR"
+    await m.answer(
+        "👋 Привет!\n\n"
+        "Я умею:\n"
+        "🤖 Отвечать как AI\n"
+        "📷 Делать QR-коды\n"
+        "🛠 Создавать Telegram-ботов\n"
+        "🖼️ Генерировать изображения\n\n"
+        "Выбери кнопку ниже 👇",
+        reply_markup=main_menu(m.from_user.id)
     )
 
+# ================== CALLBACKS ==================
+@dp.callback_query(F.data == "back")
+async def back(c):
+    user_mode[c.from_user.id] = "menu"
+    broadcast_state.pop(c.from_user.id, None)
+    await c.message.edit_text("Главное меню 👇", reply_markup=main_menu(c.from_user.id))
+
+@dp.callback_query(F.data == "ai")
+async def ai_mode(c):
+    user_mode[c.from_user.id] = "ai"
+    await c.message.edit_text(
+        "🤖 *AI чат*\n\n"
+        "Просто напиши любой вопрос или текст — я отвечу.",
+        parse_mode="Markdown",
+        reply_markup=back_menu()
+    )
+
+@dp.callback_query(F.data == "qr")
+async def qr_mode(c):
+    user_mode[c.from_user.id] = "qr"
+    await c.message.edit_text(
+        "📷 *QR-код*\n\n"
+        "Отправь текст или ссылку — я сделаю QR-код.",
+        parse_mode="Markdown",
+        reply_markup=back_menu()
+    )
+
+@dp.callback_query(F.data == "image")
+async def image_mode(c):
+    user_mode[c.from_user.id] = "image"
+    await c.message.edit_text(
+        "🖼️ *Генерация фото*\n\n"
+        "Опиши изображение словами.\n"
+        "Пример: `серый кот на диване`",
+        parse_mode="Markdown",
+        reply_markup=back_menu()
+    )
+
+@dp.callback_query(F.data == "create_bot")
+async def create_bot(c):
+    user_mode[c.from_user.id] = "create_bot"
+    bot_create_state[c.from_user.id] = {"step": 1}
+    await c.message.edit_text(
+        "🛠 *Создание бота*\n\n"
+        "1️⃣ Отправь токен бота\n"
+        "2️⃣ Потом опишешь, что он должен делать",
+        parse_mode="Markdown",
+        reply_markup=back_menu()
+    )
+
+# ================== ADMIN ==================
+@dp.callback_query(F.data == "admin")
+async def admin(c):
+    if c.from_user.id != OWNER_ID:
+        return
+    await c.message.edit_text(
+        "👑 *Admin-панель*",
+        parse_mode="Markdown",
+        reply_markup=admin_menu()
+    )
+
+@dp.callback_query(F.data == "broadcast")
+async def broadcast_start(c):
+    if c.from_user.id != OWNER_ID:
+        return
+    broadcast_state[c.from_user.id] = "text"
+    await c.message.edit_text(
+        "📢 Отправь текст рассылки.\n"
+        "Сообщение получат ВСЕ пользователи, которые нажали /start.",
+        reply_markup=back_menu()
+    )
+
+# ================== TEXT ==================
 @dp.message(F.text)
-async def handle_text(message: Message):
-    uid = message.from_user.id
-    mode = user_mode.get(uid, "menu")
+async def text_handler(m: Message):
+    uid = m.from_user.id
+    mode = user_mode.get(uid)
 
-    if mode == "menu":
-        await message.answer(".", reply_markup=main_menu())
+    # --- рассылка ---
+    if broadcast_state.get(uid) == "text":
+        users = get_all_users()
+        for u in users:
+            try:
+                await bot.send_message(int(u), m.text)
+                await asyncio.sleep(0.05)
+            except:
+                pass
+        broadcast_state.pop(uid)
+        await m.answer("✅ Рассылка завершена", reply_markup=main_menu(uid))
         return
 
-    if mode == "qr":
-        if not message.text.startswith("http"):
-            await message.answer("Ошибка.")
+    # --- image ---
+    if mode == "image":
+        if not can_generate_image(uid):
+            await m.answer("❌ Лимит 5 изображений в день")
             return
-        await send_qr(message, message.text)
+        img = await generate_image(m.text)
+        await m.answer_photo(BufferedInputFile(img, "image.png"))
         return
 
-    if mode == "chat":
-        thinking = await message.answer("…")
-        await bot.send_chat_action(message.chat.id, "typing")
-        answer = await get_ai_response(uid, message.text)
-        await thinking.delete()
-        code = extract_code(answer)
+    # --- qr ---
+    if mode == "qr":
+        img = qrcode.make(m.text)
+        bio = BytesIO()
+        img.save(bio, "PNG")
+        bio.seek(0)
+        await m.answer_photo(BufferedInputFile(bio.read(), "qr.png"))
+        return
 
-        if code:
-            file = BufferedInputFile(code.encode("utf-8"), filename="ai_code.py")
-            await message.answer_document(file, caption="Код")
-        else:
-            await send_long(message, answer)
+    # --- create bot ---
+    if mode == "create_bot":
+        state = bot_create_state[uid]
+        if state["step"] == 1:
+            state["token"] = m.text
+            state["step"] = 2
+            await m.answer("📝 Теперь опиши, что должен делать бот")
+            return
+        code = await ai_request(uid, f"Создай бота aiogram 3. {m.text}")
+        await m.answer_document(BufferedInputFile(code.encode(), "bot.py"))
+        await m.answer("✅ Бот создан", reply_markup=main_menu(uid))
+        user_mode[uid] = "menu"
+        return
 
+    # --- ai ---
+    if mode == "ai":
+        reply = await ai_request(uid, m.text)
+        await m.answer(reply)
+        return
+
+# ================== MAIN ==================
 async def main():
-    logging.info("Запуск")
+    logging.info("Бот запущен")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
-
