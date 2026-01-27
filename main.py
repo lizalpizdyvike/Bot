@@ -1,267 +1,202 @@
 import asyncio
 import logging
-import aiohttp
-import json
-import os
-from datetime import datetime
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, BufferedInputFile
-from aiogram.filters import CommandStart
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-import qrcode
-from io import BytesIO
-from zoneinfo import ZoneInfo
-from urllib.parse import quote
+from dataclasses import dataclass
 
-# ================== НАСТРОЙКИ ==================
-TELEGRAM_TOKEN = "8319221865:AAGy4cA5k9XRWHV4q4zcbieJ9r_KE-aUFjQ"
-OWNER_ID = 7616322842
-TEXT_API_URL = "http://api.onlysq.ru/ai/v2"
-MODEL_TEXT = "gpt-4o-mini"
+from aiogram import Bot, Dispatcher, Router
+from aiogram.types import Message, ChatMemberUpdated
+from aiogram.enums import ChatMemberStatus, ChatType
+from aiogram.filters import Command, CommandStart
+from aiogram.exceptions import TelegramForbiddenError
 
-DB_FILE = "chat_history.json"
-IMAGE_LIMIT_FILE = "image_limits.json"
-MSK = ZoneInfo("Europe/Moscow")
+# ================= НАСТРОЙКИ =================
 
-logging.basicConfig(level=logging.INFO)
+BOT_TOKEN = "8209848374:AAEBh4Mceach2GYzk4QRCWwa-zUkVewNfLQ"
 
-bot = Bot(token=TELEGRAM_TOKEN)
+# ================= ЛОГИ ======================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+
+def log(text: str):
+    logging.info(text)
+
+# ================= ОБЪЕКТЫ ===================
+
+bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
+router = Router()
+dp.include_router(router)
 
-user_mode = {}
-bot_create_state = {}
-broadcast_state = {}
+# ================= СОСТОЯНИЕ =================
 
-# ================== JSON ==================
-def load_json(path):
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+@dataclass
+class ChannelConfig:
+    interval: int = 5
+    limit: int = 10
+    enabled: bool = False
+    sent: int = 0
+    task: asyncio.Task | None = None
 
-def save_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+channels: dict[int, ChannelConfig] = {}
+user_selected_channel: dict[int, int] = {}
 
-async def add_user(user):
-    data = load_json(DB_FILE)
-    uid = str(user.id)
+# ================= АКТИВНОСТЬ =================
 
-    if uid in data:
-        return
+async def activity_loop(channel_id: int):
+    cfg = channels[channel_id]
+    log(f"🟢 Activity STARTED | channel_id={channel_id}")
 
-    # сохраняем пользователя
-    data[uid] = {"joined": datetime.now().isoformat()}
-    save_json(DB_FILE, data)
+    while cfg.enabled and cfg.sent < cfg.limit:
+        await asyncio.sleep(cfg.interval * 60)
 
-    # уведомление овнера
-    text = (
-        "👤 *Новый пользователь*\n\n"
-        f"Имя: {user.full_name}\n"
-        f"Username: @{user.username if user.username else 'нет'}\n"
-        f"ID: `{user.id}`"
+        try:
+            log(f"➡️ Trying to send ping | channel_id={channel_id}")
+
+            msg = await bot.send_message(channel_id, ".")
+            await asyncio.sleep(1)
+            await bot.delete_message(channel_id, msg.message_id)
+
+            cfg.sent += 1
+            log(f"✅ Ping {cfg.sent}/{cfg.limit} SENT | channel_id={channel_id}")
+
+        except TelegramForbiddenError as e:
+            log(f"⛔ FORBIDDEN | No rights in channel {channel_id}")
+            cfg.enabled = False
+            break
+
+        except Exception as e:
+            log(f"❌ ERROR | channel_id={channel_id} | {e}")
+            await asyncio.sleep(10)
+
+    cfg.enabled = False
+    log(f"🔴 Activity FINISHED | channel_id={channel_id}")
+
+# ================= СОБЫТИЯ ===================
+
+@router.my_chat_member()
+async def on_bot_added(event: ChatMemberUpdated):
+    chat = event.chat
+    status = event.new_chat_member.status
+
+    if chat.type == ChatType.CHANNEL and status == ChatMemberStatus.ADMINISTRATOR:
+        channels.setdefault(chat.id, ChannelConfig())
+        log(f"🤖 Bot ADMIN in channel {chat.id} ({chat.title})")
+
+# ================= КОМАНДЫ (ЛС) =================
+
+@router.message(CommandStart())
+async def start_cmd(msg: Message):
+    await msg.answer(
+        "🤖 Управление каналами\n\n"
+        "Команды:\n"
+        "/channels\n"
+        "/select <id>\n"
+        "/set <мин> <кол-во>\n"
+        "/start_activity\n"
+        "/stop_activity\n"
+        "/status"
     )
 
-    try:
-        photos = await bot.get_user_profile_photos(user.id, limit=1)
-        if photos.total_count > 0:
-            file_id = photos.photos[0][0].file_id
-            await bot.send_photo(
-                OWNER_ID,
-                file_id,
-                caption=text,
-                parse_mode="Markdown"
-            )
-        else:
-            await bot.send_message(
-                OWNER_ID,
-                text,
-                parse_mode="Markdown"
-            )
-    except:
-        await bot.send_message(
-            OWNER_ID,
-            text,
-            parse_mode="Markdown"
-        )
+@router.message(Command("channels"))
+async def list_channels(msg: Message):
+    if not channels:
+        await msg.answer("Нет каналов")
+        return
 
-def get_all_users():
-    return list(load_json(DB_FILE).keys())
+    text = "📡 Каналы:\n"
+    for cid in channels:
+        text += f"- `{cid}`\n"
 
-# ================== КЛАВИАТУРЫ ==================
-def main_menu(user_id: int):
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🤖 AI", callback_data="ai")
-    kb.button(text="📷 QR", callback_data="qr")
-    kb.button(text="🛠 Создать бота", callback_data="create_bot")
-    kb.button(text="🖼️ Генерация фото", callback_data="image")
-    if user_id == OWNER_ID:
-        kb.button(text="👑 Admin", callback_data="admin")
-    kb.adjust(1)
-    return kb.as_markup()
+    await msg.answer(text, parse_mode="Markdown")
 
-def back_menu():
-    kb = InlineKeyboardBuilder()
-    kb.button(text="⬅️ Назад", callback_data="back")
-    return kb.as_markup()
+@router.message(Command("select"))
+async def select_channel(msg: Message):
+    cid = int(msg.text.split()[1])
+    if cid not in channels:
+        await msg.answer("Канал не найден")
+        return
 
-def admin_menu():
-    kb = InlineKeyboardBuilder()
-    kb.button(text="📢 Рассылка", callback_data="broadcast")
-    kb.button(text="⬅️ Назад", callback_data="back")
-    kb.adjust(1)
-    return kb.as_markup()
+    user_selected_channel[msg.from_user.id] = cid
+    await msg.answer(f"✅ Канал выбран: `{cid}`", parse_mode="Markdown")
 
-# ================== AI ==================
-async def ai_request(uid, text):
-    headers = {"Authorization": "Bearer openai"}
-    payload = {
-        "model": MODEL_TEXT,
-        "request": {
-            "messages": [{"role": "user", "content": text}]
-        }
-    }
-    async with aiohttp.ClientSession() as s:
-        async with s.post(TEXT_API_URL, json=payload, headers=headers) as r:
-            data = await r.json()
-            return data["choices"][0]["message"]["content"]
+def selected_channel(user_id: int):
+    return user_selected_channel.get(user_id)
 
-# ================== IMAGE ==================
-def can_generate_image(uid):
-    data = load_json(IMAGE_LIMIT_FILE)
-    uid = str(uid)
-    today = datetime.now(MSK).strftime("%Y-%m-%d")
+@router.message(Command("set"))
+async def set_cmd(msg: Message):
+    cid = selected_channel(msg.from_user.id)
+    if not cid:
+        await msg.answer("Сначала /select")
+        return
 
-    if uid not in data or data[uid]["date"] != today:
-        data[uid] = {"date": today, "count": 0}
+    minutes, limit = map(int, msg.text.split()[1:])
+    cfg = channels[cid]
+    cfg.interval = minutes
+    cfg.limit = limit
+    cfg.sent = 0
 
-    if data[uid]["count"] >= 5:
-        return False
+    log(f"⚙️ Settings | channel_id={cid}")
+    await msg.answer("⚙️ Настройки сохранены")
 
-    data[uid]["count"] += 1
-    save_json(IMAGE_LIMIT_FILE, data)
-    return True
+@router.message(Command("start_activity"))
+async def start_activity(msg: Message):
+    cid = selected_channel(msg.from_user.id)
+    if not cid:
+        await msg.answer("Сначала /select")
+        return
 
-async def generate_image(prompt):
-    url = f"https://image.pollinations.ai/prompt/{quote(prompt)}"
-    async with aiohttp.ClientSession() as s:
-        async with s.get(url) as r:
-            return await r.read()
+    cfg = channels[cid]
+    if cfg.enabled:
+        await msg.answer("Уже работает")
+        return
 
-# ================== START ==================
-@dp.message(CommandStart())
-async def start(m: Message):
-    await add_user(m.from_user)
+    cfg.enabled = True
+    cfg.sent = 0
+    cfg.task = asyncio.create_task(activity_loop(cid))
 
-    await m.answer(
-        "👋 Привет!\n\nВыбери кнопку ниже 👇",
-        reply_markup=main_menu(m.from_user.id)
+    log(f"🟢 Activity ENABLED | channel_id={cid}")
+    await msg.answer("🟢 Запущено")
+
+@router.message(Command("stop_activity"))
+async def stop_activity(msg: Message):
+    cid = selected_channel(msg.from_user.id)
+    if not cid:
+        return
+
+    cfg = channels[cid]
+    cfg.enabled = False
+    if cfg.task:
+        cfg.task.cancel()
+
+    log(f"🔴 Activity STOPPED | channel_id={cid}")
+    await msg.answer("🔴 Остановлено")
+
+@router.message(Command("status"))
+async def status_cmd(msg: Message):
+    cid = selected_channel(msg.from_user.id)
+    if not cid:
+        await msg.answer("Канал не выбран")
+        return
+
+    cfg = channels[cid]
+    await msg.answer(
+        f"📊 Статус:\n"
+        f"Интервал: {cfg.interval} мин\n"
+        f"Лимит: {cfg.limit}\n"
+        f"Отправлено: {cfg.sent}\n"
+        f"Активно: {'🟢' if cfg.enabled else '🔴'}"
     )
 
-# ================== CALLBACKS ==================
-@dp.callback_query(F.data == "back")
-async def back(c):
-    await add_user(c.from_user)
-    user_mode[c.from_user.id] = "menu"
-    broadcast_state.pop(c.from_user.id, None)
-    await c.message.edit_text("Главное меню 👇", reply_markup=main_menu(c.from_user.id))
+# ================= ЗАПУСК =====================
 
-@dp.callback_query(F.data == "ai")
-async def ai_mode(c):
-    await add_user(c.from_user)
-    user_mode[c.from_user.id] = "ai"
-    await c.message.edit_text("🤖 Напиши сообщение", reply_markup=back_menu())
-
-@dp.callback_query(F.data == "qr")
-async def qr_mode(c):
-    await add_user(c.from_user)
-    user_mode[c.from_user.id] = "qr"
-    await c.message.edit_text("📷 Отправь текст", reply_markup=back_menu())
-
-@dp.callback_query(F.data == "image")
-async def image_mode(c):
-    await add_user(c.from_user)
-    user_mode[c.from_user.id] = "image"
-    await c.message.edit_text("🖼 Опиши изображение", reply_markup=back_menu())
-
-@dp.callback_query(F.data == "create_bot")
-async def create_bot(c):
-    await add_user(c.from_user)
-    user_mode[c.from_user.id] = "create_bot"
-    bot_create_state[c.from_user.id] = {"step": 1}
-    await c.message.edit_text("🔑 Отправь токен бота", reply_markup=back_menu())
-
-@dp.callback_query(F.data == "admin")
-async def admin(c):
-    await add_user(c.from_user)
-    if c.from_user.id == OWNER_ID:
-        await c.message.edit_text("👑 Admin", reply_markup=admin_menu())
-
-@dp.callback_query(F.data == "broadcast")
-async def broadcast_start(c):
-    await add_user(c.from_user)
-    if c.from_user.id != OWNER_ID:
-        return
-    broadcast_state[c.from_user.id] = "text"
-    await c.message.edit_text("📢 Отправь текст рассылки", reply_markup=back_menu())
-
-# ================== TEXT ==================
-@dp.message(F.text)
-async def text_handler(m: Message):
-    await add_user(m.from_user)
-
-    uid = m.from_user.id
-    mode = user_mode.get(uid)
-
-    if broadcast_state.get(uid) == "text":
-        for u in get_all_users():
-            try:
-                await bot.send_message(int(u), m.text)
-                await asyncio.sleep(0.05)
-            except:
-                pass
-        broadcast_state.pop(uid)
-        await m.answer("✅ Рассылка завершена", reply_markup=main_menu(uid))
-        return
-
-    if mode == "image":
-        if not can_generate_image(uid):
-            await m.answer("❌ Лимит 5 изображений в день")
-            return
-        img = await generate_image(m.text)
-        await m.answer_photo(BufferedInputFile(img, "image.png"))
-        return
-
-    if mode == "qr":
-        img = qrcode.make(m.text)
-        bio = BytesIO()
-        img.save(bio, "PNG")
-        bio.seek(0)
-        await m.answer_photo(BufferedInputFile(bio.read(), "qr.png"))
-        return
-
-    if mode == "create_bot":
-        state = bot_create_state[uid]
-        if state["step"] == 1:
-            state["token"] = m.text
-            state["step"] = 2
-            await m.answer("📝 Опиши, что должен делать бот")
-            return
-        code = await ai_request(uid, f"Создай бота aiogram 3. {m.text}")
-        await m.answer_document(BufferedInputFile(code.encode(), "bot.py"))
-        await m.answer("✅ Бот создан", reply_markup=main_menu(uid))
-        user_mode[uid] = "menu"
-        return
-
-    if mode == "ai":
-        reply = await ai_request(uid, m.text)
-        await m.answer(reply)
-        return
-
-# ================== MAIN ==================
 async def main():
-    logging.info("Бот запущен")
-    await dp.start_polling(bot)
+    log("🚀 BOT STARTED")
+    await dp.start_polling(
+        bot,
+        allowed_updates=["my_chat_member", "message"]
+    )
 
 if __name__ == "__main__":
     asyncio.run(main())
