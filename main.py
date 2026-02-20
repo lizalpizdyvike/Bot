@@ -1,202 +1,160 @@
 import asyncio
 import logging
-from dataclasses import dataclass
+import aiohttp
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import CommandStart
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from aiogram import Bot, Dispatcher, Router
-from aiogram.types import Message, ChatMemberUpdated
-from aiogram.enums import ChatMemberStatus, ChatType
-from aiogram.filters import Command, CommandStart
-from aiogram.exceptions import TelegramForbiddenError
+# ===== CONFIG =====
+TELEGRAM_TOKEN = "8386816504:AAEE4eByAWBojkr5GjHOuPqELOjwgT9d-ZQ"
+CHANNEL_ID = -1003839610709
 
-# ================= НАСТРОЙКИ =================
+API_URL = "http://api.onlysq.ru/ai/v2"
+MODEL = "gpt-4o-mini"
+STICKER_ID = "CAACAgIAAxkBAAIZemmYUVN88dYZTh0-80wf1_wbDK21AAIxJgACEBSRS8-bcxFm6MIfOgQ"
 
-BOT_TOKEN = "8209848374:AAEBh4Mceach2GYzk4QRCWwa-zUkVewNfLQ"
-
-# ================= ЛОГИ ======================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
-)
-
-def log(text: str):
-    logging.info(text)
-
-# ================= ОБЪЕКТЫ ===================
-
-bot = Bot(BOT_TOKEN)
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
-router = Router()
-dp.include_router(router)
+session: aiohttp.ClientSession | None = None
 
-# ================= СОСТОЯНИЕ =================
+# ===== STATE =====
+user_mode: dict[int, str] = {}
+user_memory: dict[int, list[dict]] = {}
 
-@dataclass
-class ChannelConfig:
-    interval: int = 5
-    limit: int = 10
-    enabled: bool = False
-    sent: int = 0
-    task: asyncio.Task | None = None
+# ===== SUB CHECK =====
+async def is_subscribed(user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(CHANNEL_ID, user_id)
+        return member.status in ["member", "administrator", "creator"]
+    except Exception as e:
+        logging.warning(f"SUB ERROR {user_id}: {e}")
+        return False
 
-channels: dict[int, ChannelConfig] = {}
-user_selected_channel: dict[int, int] = {}
+# ===== KEYBOARDS =====
+sub_kb = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="🔥 Подписаться", url="https://t.me/crashkids")],
+    [InlineKeyboardButton(text="✅ Проверить подписку", callback_data="check_sub")]
+])
 
-# ================= АКТИВНОСТЬ =================
+def main_menu() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🤖 AI", callback_data="chat_ai")
+    kb.button(text="🗑️ Сбросить память", callback_data="reset_memory")
+    kb.adjust(1)
+    return kb.as_markup()
 
-async def activity_loop(channel_id: int):
-    cfg = channels[channel_id]
-    log(f"🟢 Activity STARTED | channel_id={channel_id}")
+def back_menu() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⬅️ Назад", callback_data="back_menu")
+    return kb.as_markup()
 
-    while cfg.enabled and cfg.sent < cfg.limit:
-        await asyncio.sleep(cfg.interval * 60)
+# ===== AI FUNCTION =====
+async def get_ai_response(user_id: int, prompt: str) -> str:
+    if not session:
+        raise RuntimeError("Session not initialized")
+    if user_id not in user_memory:
+        user_memory[user_id] = []
 
+    user_memory[user_id].append({"role": "user", "content": prompt})
+    headers = {"Authorization": "Bearer openai"}
+    payload = {"model": MODEL, "request": {"messages": user_memory[user_id]}}
+
+    try:
+        async with session.post(API_URL, json=payload, headers=headers, timeout=60) as resp:
+            data = await resp.json()
+            choices = data.get("choices", [])
+            if not choices:
+                return "❌ Ошибка AI: пустой ответ"
+            msg = choices[0].get("message", {}).get("content", "")
+            if not msg:
+                return "❌ Ошибка AI: пустой ответ"
+            user_memory[user_id].append({"role": "assistant", "content": msg})
+            return msg
+    except Exception as e:
+        logging.exception(f"AI ERROR: {e}")
+        return f"❌ Ошибка AI: {e}"
+
+# ===== START HANDLER =====
+@dp.message(CommandStart())
+async def start_handler(message: Message):
+    if not await is_subscribed(message.from_user.id):
+        await message.answer("❌ Подпишись на @crashkids", reply_markup=sub_kb)
+        return
+
+    user_mode[message.from_user.id] = "chat"
+    await message.answer_sticker(STICKER_ID)
+    await message.answer(
+        "🔥 Привет! Я нейросеть. Напиши что-нибудь — я отвечу!",
+        reply_markup=main_menu()
+    )
+
+# ===== CALLBACK HANDLERS =====
+@dp.callback_query(F.data == "check_sub")
+async def check_sub(call: CallbackQuery):
+    if await is_subscribed(call.from_user.id):
+        await call.message.edit_text("✅ Подписка подтверждена! Напиши /start")
+    else:
+        await call.answer("❌ Ты не подписан!", show_alert=True)
+
+@dp.callback_query(F.data == "chat_ai")
+async def chat_ai(call: CallbackQuery):
+    user_mode[call.from_user.id] = "chat"
+    await call.message.edit_text("🤖 AI режим включен", reply_markup=back_menu())
+
+@dp.callback_query(F.data == "reset_memory")
+async def reset_memory(call: CallbackQuery):
+    user_memory[call.from_user.id] = []
+    await call.answer("🗑️ Память сброшена!", show_alert=True)
+
+@dp.callback_query(F.data == "back_menu")
+async def back_menu_callback(call: CallbackQuery):
+    user_mode[call.from_user.id] = "chat"
+    await call.message.edit_text("Главное меню", reply_markup=main_menu())
+
+# ===== CHAT WITH SYNCHRONOUS PROGRESS =====
+@dp.message(F.text)
+async def chat(message: Message):
+    if not await is_subscribed(message.from_user.id):
+        await message.answer("❌ Подпишись!", reply_markup=sub_kb)
+        return
+
+    if user_mode.get(message.from_user.id) != "chat":
+        return
+
+    # Отправляем пустое сообщение с прогрессом
+    progress_msg = await message.answer("🤔 Думает .. 1%")
+
+    # Запускаем AI запрос параллельно
+    ai_task = asyncio.create_task(get_ai_response(message.from_user.id, message.text))
+
+    # Прогресс шагами
+    progress_steps = [1,6,19,25,38,46,58,69,73,78,87,94,98,100]
+    for p in progress_steps:
+        dots = "." * ((p // 10) % 3 + 1)
         try:
-            log(f"➡️ Trying to send ping | channel_id={channel_id}")
+            await progress_msg.edit_text(f"🤔 Думает {dots} {p}%")
+        except Exception:
+            pass
+        # Flood control Telegram
+        if p % 20 == 0 or p == 100:
+            await bot.send_chat_action(message.chat.id, "typing")
+        await asyncio.sleep(0.1)  # быстрый, плавный прогресс
 
-            msg = await bot.send_message(channel_id, ".")
-            await asyncio.sleep(1)
-            await bot.delete_message(channel_id, msg.message_id)
+    # Ждём ответ AI, если ещё не готов
+    answer = await ai_task
+    await progress_msg.edit_text(f"💬 Ответ:\n{answer}")
 
-            cfg.sent += 1
-            log(f"✅ Ping {cfg.sent}/{cfg.limit} SENT | channel_id={channel_id}")
-
-        except TelegramForbiddenError as e:
-            log(f"⛔ FORBIDDEN | No rights in channel {channel_id}")
-            cfg.enabled = False
-            break
-
-        except Exception as e:
-            log(f"❌ ERROR | channel_id={channel_id} | {e}")
-            await asyncio.sleep(10)
-
-    cfg.enabled = False
-    log(f"🔴 Activity FINISHED | channel_id={channel_id}")
-
-# ================= СОБЫТИЯ ===================
-
-@router.my_chat_member()
-async def on_bot_added(event: ChatMemberUpdated):
-    chat = event.chat
-    status = event.new_chat_member.status
-
-    if chat.type == ChatType.CHANNEL and status == ChatMemberStatus.ADMINISTRATOR:
-        channels.setdefault(chat.id, ChannelConfig())
-        log(f"🤖 Bot ADMIN in channel {chat.id} ({chat.title})")
-
-# ================= КОМАНДЫ (ЛС) =================
-
-@router.message(CommandStart())
-async def start_cmd(msg: Message):
-    await msg.answer(
-        "🤖 Управление каналами\n\n"
-        "Команды:\n"
-        "/channels\n"
-        "/select <id>\n"
-        "/set <мин> <кол-во>\n"
-        "/start_activity\n"
-        "/stop_activity\n"
-        "/status"
-    )
-
-@router.message(Command("channels"))
-async def list_channels(msg: Message):
-    if not channels:
-        await msg.answer("Нет каналов")
-        return
-
-    text = "📡 Каналы:\n"
-    for cid in channels:
-        text += f"- `{cid}`\n"
-
-    await msg.answer(text, parse_mode="Markdown")
-
-@router.message(Command("select"))
-async def select_channel(msg: Message):
-    cid = int(msg.text.split()[1])
-    if cid not in channels:
-        await msg.answer("Канал не найден")
-        return
-
-    user_selected_channel[msg.from_user.id] = cid
-    await msg.answer(f"✅ Канал выбран: `{cid}`", parse_mode="Markdown")
-
-def selected_channel(user_id: int):
-    return user_selected_channel.get(user_id)
-
-@router.message(Command("set"))
-async def set_cmd(msg: Message):
-    cid = selected_channel(msg.from_user.id)
-    if not cid:
-        await msg.answer("Сначала /select")
-        return
-
-    minutes, limit = map(int, msg.text.split()[1:])
-    cfg = channels[cid]
-    cfg.interval = minutes
-    cfg.limit = limit
-    cfg.sent = 0
-
-    log(f"⚙️ Settings | channel_id={cid}")
-    await msg.answer("⚙️ Настройки сохранены")
-
-@router.message(Command("start_activity"))
-async def start_activity(msg: Message):
-    cid = selected_channel(msg.from_user.id)
-    if not cid:
-        await msg.answer("Сначала /select")
-        return
-
-    cfg = channels[cid]
-    if cfg.enabled:
-        await msg.answer("Уже работает")
-        return
-
-    cfg.enabled = True
-    cfg.sent = 0
-    cfg.task = asyncio.create_task(activity_loop(cid))
-
-    log(f"🟢 Activity ENABLED | channel_id={cid}")
-    await msg.answer("🟢 Запущено")
-
-@router.message(Command("stop_activity"))
-async def stop_activity(msg: Message):
-    cid = selected_channel(msg.from_user.id)
-    if not cid:
-        return
-
-    cfg = channels[cid]
-    cfg.enabled = False
-    if cfg.task:
-        cfg.task.cancel()
-
-    log(f"🔴 Activity STOPPED | channel_id={cid}")
-    await msg.answer("🔴 Остановлено")
-
-@router.message(Command("status"))
-async def status_cmd(msg: Message):
-    cid = selected_channel(msg.from_user.id)
-    if not cid:
-        await msg.answer("Канал не выбран")
-        return
-
-    cfg = channels[cid]
-    await msg.answer(
-        f"📊 Статус:\n"
-        f"Интервал: {cfg.interval} мин\n"
-        f"Лимит: {cfg.limit}\n"
-        f"Отправлено: {cfg.sent}\n"
-        f"Активно: {'🟢' if cfg.enabled else '🔴'}"
-    )
-
-# ================= ЗАПУСК =====================
-
+# ===== MAIN =====
 async def main():
-    log("🚀 BOT STARTED")
-    await dp.start_polling(
-        bot,
-        allowed_updates=["my_chat_member", "message"]
-    )
+    global session
+    session = aiohttp.ClientSession()
+    logging.info("🚀 BOT RUNNING WITH MODEL: GPT-4o-mini")
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await session.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
