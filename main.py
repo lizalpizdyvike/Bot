@@ -1,860 +1,715 @@
 import asyncio
-import json
+import aiohttp
+import sqlite3
+import subprocess
+import re
+import sys
 import os
+import json
+import random
+import shutil
+import phonenumbers
+from phonenumbers import carrier, geocoder, timezone
+from email_validator import validate_email, EmailNotValidError
 from datetime import datetime
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, \
-    KeyboardButton
+from ipaddress import ip_address
+
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
+from aiogram.enums import ParseMode
+from aiogram.client.session.aiohttp import AiohttpSession
 
-# Конфигурация
-BOT_TOKEN = "8386816504:AAEXwnflG85rLlHz5-PloVrDJ9RcKbiLbg0"
-DB_FILE = "users_db.json"
+# ========== КОНФИГ ==========
+BOT_TOKEN = "8340638995:AAGKkCsF2SOXKEOTmAENRHy0L-5hIClQCH0"
+OWNER_ID = 682077172
+OWNER_USERNAME = "@criosers"
+CHANNEL_USERNAME = "@submeplz"
+STICKER_ID = "CAACAgQAAxkBAAEDFm9p03o2MvjRLoC1cTX4RTISblnYOAAC8BoAAtTRSVFKRA0KHazoAAE7BA"
 
-# Инициализация бота
-bot = Bot(token=BOT_TOKEN)
+# Папка для конвертированных сессий
+CONVERTED_DIR = "converted_sessions"
+if not os.path.exists(CONVERTED_DIR):
+    os.makedirs(CONVERTED_DIR)
+
+# ========== ПРЕМИУМ ЭМОДЗИ ID ==========
+EMOJI = {
+    "welcome": "5300766413869306803",
+    "info": "5323777706179971721",
+    "choose": "5393450133079743023",
+}
+
+def em(emoji_id: str, text: str = "") -> str:
+    return f"<tg-emoji emoji-id=\"{emoji_id}\"> </tg-emoji>{text}"
+
+# ========== СТИЛИЗОВАННЫЙ ШРИФТ ==========
+def fancy(text: str) -> str:
+    fancy_map = {
+        'а': 'α', 'б': 'β', 'в': 'в', 'г': 'г', 'д': 'д', 'е': '℮', 'ё': 'ё',
+        'ж': 'ж', 'з': 'з', 'и': 'и', 'й': 'й', 'к': 'к', 'л': 'л', 'м': 'м',
+        'н': 'η', 'о': 'ο', 'п': 'π', 'р': 'ρ', 'с': 'с', 'т': 'τ', 'у': 'γ',
+        'ф': 'φ', 'х': 'χ', 'ц': 'ц', 'ч': 'ч', 'ш': 'ш', 'щ': 'щ', 'ъ': 'ъ',
+        'ы': 'ы', 'ь': 'ь', 'э': 'э', 'ю': 'ю', 'я': 'я',
+        'a': 'α', 'b': 'β', 'c': 'c', 'd': 'd', 'e': '℮', 'f': 'f', 'g': 'g',
+        'h': 'h', 'i': 'i', 'j': 'j', 'k': 'k', 'l': 'l', 'm': 'm', 'n': 'η',
+        'o': 'ο', 'p': 'π', 'q': 'q', 'r': 'ρ', 's': 's', 't': 'τ', 'u': 'γ',
+        'v': 'v', 'w': 'w', 'x': 'x', 'y': 'y', 'z': 'z',
+        'А': 'Α', 'Б': 'Β', 'В': 'В', 'Г': 'Γ', 'Д': 'Δ', 'Е': 'Ε', 'Ё': 'Ё',
+        'Ж': 'Ж', 'З': 'З', 'И': 'И', 'Й': 'Й', 'К': 'Κ', 'Л': 'Λ', 'М': 'Μ',
+        'Н': 'Η', 'О': 'Ο', 'П': 'Π', 'Р': 'Ρ', 'С': 'С', 'Т': 'Τ', 'У': 'Υ',
+        'Ф': 'Φ', 'Х': 'Χ', 'Ц': 'Ц', 'Ч': 'Ч', 'Ш': 'Ш', 'Щ': 'Щ', 'Ъ': 'Ъ',
+        'Ы': 'Ы', 'Ь': 'Ь', 'Э': 'Э', 'Ю': 'Ю', 'Я': 'Я'
+    }
+    result = ""
+    for char in text:
+        result += fancy_map.get(char, char)
+    return result
+
+# ========== FSM ==========
+class SearchStates(StatesGroup):
+    waiting_for_ip = State()
+    waiting_for_username = State()
+    waiting_for_domain = State()
+    waiting_for_email = State()
+    waiting_for_session_file = State()
+    waiting_for_phone = State()
+    waiting_for_email_validate = State()
+
+# ========== БД ==========
+conn = sqlite3.connect("osint_bot.db")
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT,
+    first_name TEXT,
+    reg_date TEXT
+)
+""")
+conn.commit()
+
+def get_user(user_id: int):
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    return cursor.fetchone()
+
+def add_user(user_id: int, username: str, first_name: str):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute("""
+        INSERT OR IGNORE INTO users (user_id, username, first_name, reg_date)
+        VALUES (?, ?, ?, ?)
+    """, (user_id, username, first_name, now))
+    conn.commit()
+
+# ========== КЛАВИАТУРЫ ==========
+def get_main_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=fancy("IP инструменты"), callback_data="menu_ip")],
+        [InlineKeyboardButton(text=fancy("OSINT поиск"), callback_data="menu_osint")],
+        [InlineKeyboardButton(text=fancy("Полезные инструменты"), callback_data="menu_tools")],
+        [InlineKeyboardButton(text=fancy("О боте"), callback_data="menu_about")],
+    ])
+
+def get_ip_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=fancy("IP Lookup"), callback_data="search_ip")],
+        [InlineKeyboardButton(text=fancy("WHOIS домена"), callback_data="search_domain")],
+        [InlineKeyboardButton(text=fancy("Назад"), callback_data="back_to_menu")]
+    ])
+
+def get_osint_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=fancy("Поиск по нику"), callback_data="search_username")],
+        [InlineKeyboardButton(text=fancy("Поиск по email"), callback_data="search_email")],
+        [InlineKeyboardButton(text=fancy("Назад"), callback_data="back_to_menu")]
+    ])
+
+def get_tools_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=fancy("Конвертер .session → tdata"), callback_data="tool_session")],
+        [InlineKeyboardButton(text=fancy("Вычисление адреса по IP"), callback_data="tool_ip_address")],
+        [InlineKeyboardButton(text=fancy("Проверка номера телефона"), callback_data="tool_phone")],
+        [InlineKeyboardButton(text=fancy("Проверка email (валидность)"), callback_data="tool_email_validate")],
+        [InlineKeyboardButton(text=fancy("Назад"), callback_data="back_to_menu")]
+    ])
+
+def get_back_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=fancy("Назад"), callback_data="back_to_menu")]
+    ])
+
+# ========== КОНВЕРТЕР ==========
+def convert_session_to_tdata(session_file_path: str, output_name: str) -> str:
+    try:
+        tdata_folder = os.path.join(CONVERTED_DIR, output_name)
+        if os.path.exists(tdata_folder):
+            shutil.rmtree(tdata_folder)
+        os.makedirs(tdata_folder)
+        
+        with open(session_file_path, 'rb') as f:
+            session_data = f.read()
+        
+        with open(os.path.join(tdata_folder, 'key_database'), 'wb') as f:
+            f.write(b'\x00' * 32)
+        
+        with open(os.path.join(tdata_folder, 'data'), 'wb') as f:
+            f.write(session_data)
+        
+        info = {
+            "version": 2,
+            "date": datetime.now().isoformat(),
+            "source": "session_converter"
+        }
+        with open(os.path.join(tdata_folder, 'info.json'), 'w') as f:
+            json.dump(info, f, indent=2)
+        
+        archive_path = os.path.join(CONVERTED_DIR, f"{output_name}.zip")
+        shutil.make_archive(archive_path.replace('.zip', ''), 'zip', tdata_folder)
+        
+        return archive_path
+    except Exception as e:
+        return None
+
+# ========== ПРОВЕРКА НОМЕРА ТЕЛЕФОНА ==========
+async def check_phone_number(phone: str) -> str:
+    try:
+        parsed = phonenumbers.parse(phone, None)
+        
+        if not phonenumbers.is_valid_number(parsed):
+            return f"Номер {phone} - НЕВАЛИДНЫЙ"
+        
+        country = geocoder.description_for_number(parsed, "ru")
+        operator = carrier.name_for_number(parsed, "ru")
+        timezones = timezone.time_zones_for_number(parsed)
+        
+        output = f"Номер: {phone}\n\n"
+        output += f"Статус: ВАЛИДНЫЙ\n"
+        output += f"Страна: {country}\n"
+        output += f"Оператор: {operator if operator else 'Не определен'}\n"
+        output += f"Часовой пояс: {', '.join(timezones)}\n"
+        
+        if phonenumbers.is_possible_number(parsed):
+            output += f"Тип: Мобильный/Стационарный\n"
+        
+        return output
+    except phonenumbers.NumberParseException as e:
+        return f"Ошибка: Неверный формат номера\n\nПримеры:\n+79991234567\n+79123456789\n89991234567"
+
+# ========== ПРОВЕРКА EMAIL НА ВАЛИДНОСТЬ ==========
+async def validate_email_address(email: str) -> str:
+    try:
+        validation = validate_email(email, check_deliverability=False)
+        
+        output = f"Email: {email}\n\n"
+        output += f"Статус: ВАЛИДНЫЙ\n"
+        output += f"Локальная часть: {validation.local_part}\n"
+        output += f"Домен: {validation.domain}\n"
+        output += f"Нормализованный: {validation.normalized}\n"
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"https://dns.google/resolve?name={validation.domain}&type=MX") as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get("Answer"):
+                            output += f"MX записи: Есть (почта принимается)\n"
+                        else:
+                            output += f"MX записи: Нет (почта может не приниматься)\n"
+        except:
+            output += f"MX записи: Не удалось проверить\n"
+        
+        return output
+    except EmailNotValidError as e:
+        return f"Email: {email}\n\nСтатус: НЕВАЛИДНЫЙ\nОшибка: {str(e)}"
+
+# ========== IP ЛУК ==========
+async def ip_lookup(ip: str) -> dict:
+    try:
+        ip_address(ip)
+    except:
+        return {"error": "Невалидный IP"}
+    
+    result = {"ip": ip, "geo": {}, "proxy": False, "hosting": False, "risk": 0}
+    
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+        try:
+            async with session.get(f"http://ip-api.com/json/{ip}?fields=66846719") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("status") == "success":
+                        result["geo"] = {
+                            "country": data.get("country", "н/д"),
+                            "city": data.get("city", "н/д"),
+                            "region": data.get("regionName", "н/д"),
+                            "zip": data.get("zip", "н/д"),
+                            "lat": data.get("lat"),
+                            "lon": data.get("lon"),
+                            "isp": data.get("isp", "н/д"),
+                            "org": data.get("org", "н/д"),
+                            "as": data.get("as", "н/д")
+                        }
+                        result["proxy"] = data.get("proxy", False)
+                        result["hosting"] = data.get("hosting", False)
+                        
+                        risk = 0
+                        if result["proxy"]: risk += 50
+                        if result["hosting"]: risk += 30
+                        result["risk"] = risk
+        except:
+            pass
+    return result
+
+# ========== SHERLOCK ==========
+async def run_sherlock(username: str) -> str:
+    try:
+        commands_to_try = [
+            [sys.executable, "-m", "sherlock", username, "--print-found", "--timeout", "15", "--no-color"],
+            ["sherlock", username, "--print-found", "--timeout", "15", "--no-color"],
+        ]
+        
+        output = None
+        for cmd in commands_to_try:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await proc.communicate()
+                output = stdout.decode("utf-8", errors="ignore")
+                if output and len(output) > 10:
+                    break
+            except:
+                continue
+        
+        if not output:
+            return "Sherlock не найден\n\nУстановка: pip install sherlock-project"
+        
+        lines = output.split('\n')
+        found = []
+        for line in lines:
+            if '[' in line and ']' in line and 'https://' in line:
+                found.append(line.strip())
+        
+        if found:
+            return '\n'.join(found[:30])
+        return "Ничего не найдено"
+    except Exception as e:
+        return f"Ошибка: {str(e)}"
+
+# ========== EMAIL ==========
+async def email_check(email: str) -> str:
+    services = ["instagram", "github", "spotify", "discord"]
+    found = []
+    
+    async with aiohttp.ClientSession() as session:
+        for service in services:
+            try:
+                if service == "instagram":
+                    async with session.post("https://www.instagram.com/accounts/web_create_ajax/attempt/", json={"email": email}) as resp:
+                        if resp.status in [200, 422]:
+                            found.append(service)
+                elif service == "github":
+                    async with session.post("https://github.com/signup_check/email", json={"email": email}) as resp:
+                        if resp.status == 422:
+                            found.append(service)
+                await asyncio.sleep(0.3)
+            except:
+                pass
+    
+    if found:
+        return f"Email: {email}\n\nНайден на:\n" + "\n".join(f"  - {s}" for s in found)
+    return f"Email: {email}\n\nНе найден"
+
+# ========== WHOIS ==========
+async def domain_whois(domain: str) -> str:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "whois", domain,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await proc.communicate()
+        whois_text = stdout.decode("utf-8", errors="ignore")
+        
+        result = []
+        patterns = {
+            "Регистратор": r"Registrar:\s*(.+)",
+            "Создан": r"Creation Date:\s*(.+)",
+            "Истекает": r"Expiry Date:\s*(.+)"
+        }
+        
+        for name, pattern in patterns.items():
+            match = re.search(pattern, whois_text, re.IGNORECASE)
+            if match:
+                result.append(f"{name}: {match.group(1).strip()}")
+        
+        return '\n'.join(result) if result else "Данные не найдены"
+    except:
+        return "Ошибка"
+
+# ========== БОТ ==========
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
+bot = None
 
-
-# States для регистрации
-class Registration(StatesGroup):
-    name = State()
-    age = State()
-    gender = State()
-    city = State()
-    about = State()
-    photo = State()
-
-
-class Search(StatesGroup):
-    viewing = State()
-
-
-class EditProfile(StatesGroup):
-    name = State()
-    age = State()
-    city = State()
-    about = State()
-    photo = State()
-
-
-# База данных
-class Database:
-    def __init__(self):
-        self.load_db()
-
-    def load_db(self):
-        if os.path.exists(DB_FILE):
-            with open(DB_FILE, 'r', encoding='utf-8') as f:
-                self.data = json.load(f)
-        else:
-            self.data = {"users": {}, "likes": {}, "matches": {}}
-            self.save_db()
-
-    def save_db(self):
-        with open(DB_FILE, 'w', encoding='utf-8') as f:
-            json.dump(self.data, f, ensure_ascii=False, indent=2)
-
-    def add_user(self, user_id, profile):
-        self.data["users"][str(user_id)] = profile
-        self.data["likes"][str(user_id)] = []
-        self.data["matches"][str(user_id)] = []
-        self.save_db()
-
-    def get_user(self, user_id):
-        return self.data["users"].get(str(user_id))
-
-    def update_user(self, user_id, profile):
-        self.data["users"][str(user_id)] = profile
-        self.save_db()
-
-    def add_like(self, from_user, to_user):
-        if str(from_user) not in self.data["likes"]:
-            self.data["likes"][str(from_user)] = []
-        self.data["likes"][str(from_user)].append(str(to_user))
-
-        # Проверка на взаимный лайк (match)
-        if str(to_user) in self.data["likes"] and str(from_user) in self.data["likes"][str(to_user)]:
-            if str(from_user) not in self.data["matches"]:
-                self.data["matches"][str(from_user)] = []
-            if str(to_user) not in self.data["matches"]:
-                self.data["matches"][str(to_user)] = []
-
-            self.data["matches"][str(from_user)].append(str(to_user))
-            self.data["matches"][str(to_user)].append(str(from_user))
-            self.save_db()
-            return True
-        self.save_db()
-        return False
-
-    def get_candidates(self, user_id, gender_filter=None):
-        user = self.get_user(user_id)
-        if not user:
-            return []
-
-        # Получаем фильтр пользователя если не указан
-        if gender_filter is None:
-            gender_filter = user.get('gender_filter', 'all')
-
-        liked = self.data["likes"].get(str(user_id), [])
-        candidates = []
-
-        for uid, profile in self.data["users"].items():
-            if uid == str(user_id) or uid in liked:
-                continue
-
-            # Пропускаем скрытые анкеты
-            if profile.get('hidden', False):
-                continue
-
-            # Применяем фильтр
-            if gender_filter != 'all':
-                if profile.get("gender") != gender_filter:
-                    continue
-
-            candidates.append((uid, profile))
-
-        return candidates
-
-    def get_matches(self, user_id):
-        match_ids = self.data["matches"].get(str(user_id), [])
-        matches = []
-        for mid in match_ids:
-            profile = self.get_user(mid)
-            if profile:
-                matches.append((mid, profile))
-        return matches
-
-
-db = Database()
-
-
-# Клавиатуры
-def main_menu_kb():
-    kb = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="🔍 Смотреть анкеты")],
-            [KeyboardButton(text="💕 Мои симпатии"), KeyboardButton(text="⚙️ Настройки")]
-        ],
-        resize_keyboard=True
-    )
-    return kb
-
-
-def gender_kb():
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👨 Мужчина", callback_data="gender_male")],
-        [InlineKeyboardButton(text="👩 Женщина", callback_data="gender_female")]
-    ])
-    return kb
-
-
-def search_kb():
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❤️ Лайк", callback_data="like"),
-         InlineKeyboardButton(text="👎 Пропустить", callback_data="skip")]
-    ])
-    return kb
-
-
-def profile_kb():
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏️ Редактировать", callback_data="edit_profile")]
-    ])
-    return kb
-
-
-def settings_kb():
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏️ Редактировать профиль", callback_data="edit_profile")],
-        [InlineKeyboardButton(text="🚻 Кого показывать", callback_data="filter_gender")],
-        [InlineKeyboardButton(text="👁 Видимость анкеты", callback_data="toggle_visibility")],
-        [InlineKeyboardButton(text="🗑 Удалить профиль", callback_data="delete_profile")]
-    ])
-    return kb
-
-
-def gender_filter_kb():
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👨 Только мужчин", callback_data="filter_male")],
-        [InlineKeyboardButton(text="👩 Только женщин", callback_data="filter_female")],
-        [InlineKeyboardButton(text="👥 Всех", callback_data="filter_all")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="settings")]
-    ])
-    return kb
-
-
-def confirm_delete_kb():
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Да, удалить", callback_data="confirm_delete")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="settings")]
-    ])
-    return kb
-
-
-def edit_profile_kb():
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📝 Имя", callback_data="edit_name")],
-        [InlineKeyboardButton(text="🎂 Возраст", callback_data="edit_age")],
-        [InlineKeyboardButton(text="🏙 Город", callback_data="edit_city")],
-        [InlineKeyboardButton(text="💬 О себе", callback_data="edit_about")],
-        [InlineKeyboardButton(text="📸 Фото", callback_data="edit_photo")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_profile")]
-    ])
-    return kb
-
-
-# Форматирование профиля
-def format_profile(profile):
-    gender_emoji = "👨" if profile['gender'] == 'male' else "👩"
-    text = f"<b>{gender_emoji} {profile['name']}, {profile['age']}, {profile['city']}</b>\n\n"
-    text += f"<i>{profile['about']}</i>"
-    return text
-
-
-# Команда /start
 @dp.message(Command("start"))
-async def cmd_start(message: Message, state: FSMContext):
-    user = db.get_user(message.from_user.id)
+async def cmd_start(message: Message):
+    user_id = message.from_user.id
+    username = message.from_user.username or "no_username"
+    first_name = message.from_user.first_name or "User"
+    
+    if not get_user(user_id):
+        add_user(user_id, username, first_name)
+    
+    await message.answer_sticker(sticker=STICKER_ID)
+    
+    welcome_text = (
+        f"{em(EMOJI['welcome'])} <b>{fancy('Добро пожаловать в Логово Романтика')}</b>\n\n"
+        f"{em(EMOJI['info'])} <b>{fancy('Информация')}</b>\n"
+        f"├─ {fancy('Ваш ID')}: <code>{user_id}</code>\n"
+        f"├─ {fancy('Переходник')} - {CHANNEL_USERNAME}\n"
+        f"└─ {fancy('Владелец')}: {OWNER_USERNAME}\n\n"
+        f"{em(EMOJI['choose'])} <b>{fancy('Выбери нужный пункт ниже')}</b>:"
+    )
+    
+    await message.answer(
+        welcome_text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_main_keyboard()
+    )
 
-    if user:
-        text = f"<b>Привет, {user['name']}! 👋</b>\n\nРады видеть тебя снова!"
-        await message.answer(text, reply_markup=main_menu_kb(), parse_mode="HTML")
-    else:
-        text = "<b>💕 Добро пожаловать в Dating Bot!</b>\n\n"
-        text += "Здесь ты можешь найти новых друзей и знакомства.\n\n"
-        text += "Давай создадим твою анкету! 📝\n\n"
-        text += "Как тебя зовут?"
-        await message.answer(text, parse_mode="HTML")
-        await state.set_state(Registration.name)
-
-
-# Регистрация - Имя
-@dp.message(Registration.name)
-async def process_name(message: Message, state: FSMContext):
-    await state.update_data(name=message.text)
-    await message.answer("<b>Сколько тебе лет?</b>\n\nУкажи свой возраст цифрами:", parse_mode="HTML")
-    await state.set_state(Registration.age)
-
-
-# Регистрация - Возраст
-@dp.message(Registration.age)
-async def process_age(message: Message, state: FSMContext):
-    try:
-        age = int(message.text)
-        if age < 18 or age > 100:
-            await message.answer("❗️ Укажи корректный возраст (18-100):")
-            return
-
-        await state.update_data(age=age)
-        await message.answer("<b>Выбери свой пол:</b>", reply_markup=gender_kb(), parse_mode="HTML")
-        await state.set_state(Registration.gender)
-    except ValueError:
-        await message.answer("❗️ Укажи возраст цифрами:")
-
-
-# Регистрация - Пол
-@dp.callback_query(Registration.gender, F.data.startswith("gender_"))
-async def process_gender(callback: CallbackQuery, state: FSMContext):
-    gender = callback.data.split("_")[1]
-    gender_text = "Мужчина" if gender == "male" else "Женщина"
-    gender_emoji = "👨" if gender == "male" else "👩"
-
-    await state.update_data(gender=gender, gender_text=gender_text, gender_emoji=gender_emoji)
-    await callback.message.edit_text("<b>В каком городе ты живёшь?</b>", parse_mode="HTML")
-    await state.set_state(Registration.city)
+@dp.callback_query(F.data == "back_to_menu")
+async def back_to_menu(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    
+    welcome_text = (
+        f"{em(EMOJI['welcome'])} <b>{fancy('Добро пожаловать в Логово Романтика')}</b>\n\n"
+        f"{em(EMOJI['info'])} <b>{fancy('Информация')}</b>\n"
+        f"├─ {fancy('Ваш ID')}: <code>{user_id}</code>\n"
+        f"├─ {fancy('Переходник')} - {CHANNEL_USERNAME}\n"
+        f"└─ {fancy('Владелец')}: {OWNER_USERNAME}\n\n"
+        f"{em(EMOJI['choose'])} <b>{fancy('Выбери нужный пункт ниже')}</b>:"
+    )
+    
+    await callback.message.edit_text(
+        welcome_text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_main_keyboard()
+    )
     await callback.answer()
 
+@dp.callback_query(F.data == "menu_about")
+async def menu_about(callback: CallbackQuery):
+    about_text = (
+        f"🤖 <b>{fancy('Информация о боте')}</b>\n\n"
+        f"👤 <b>{fancy('Создатель')}:</b> {OWNER_USERNAME}\n"
+        f"🚀 <b>{fancy('Версия')}:</b> Beta\n\n"
+        f"➡️ <b>{fancy('Переходник')}:</b> @submeplz\n\n"
+        f"📝 <b>{fancy('Описание')}:</b>\n"
+        f"{fancy('Сервис для OSINT разведки и полезных инструментов')}.\n\n"
+        f"<b>{fancy('Возможности бота')}:</b>\n"
+        f"• {fancy('IP Lookup')} - {fancy('геолокация, прокси, риск')}\n"
+        f"• {fancy('WHOIS домена')} - {fancy('информация о домене')}\n"
+        f"• {fancy('Поиск по нику')} - {fancy('Sherlock по 300+ соцсетям')}\n"
+        f"• {fancy('Поиск по email')} - {fancy('проверка регистрации')}\n"
+        f"• {fancy('Конвертер .session → tdata')} - {fancy('Telegram сессии')}\n"
+        f"• {fancy('Проверка номера телефона')} - {fancy('валидация, оператор, страна')}\n"
+        f"• {fancy('Проверка email')} - {fancy('валидность, MX записи')}\n"
+        f"<b>{fancy('Контакты')}:</b>\n"
+        f"└─ {fancy('Владелец')}: {OWNER_USERNAME}"
+    )
+    
+    await callback.message.edit_text(
+        about_text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_back_keyboard()
+    )
+    await callback.answer()
 
-# Регистрация - Город
-@dp.message(Registration.city)
-async def process_city(message: Message, state: FSMContext):
-    await state.update_data(city=message.text)
-    text = "<b>Расскажи о себе!</b>\n\n"
-    text += "Напиши немного о себе, своих интересах и увлечениях:"
-    await message.answer(text, parse_mode="HTML")
-    await state.set_state(Registration.about)
+@dp.callback_query(F.data == "menu_ip")
+async def menu_ip(callback: CallbackQuery):
+    await callback.message.edit_text(
+        f"{fancy('IP инструменты')}\n\n{fancy('IP Lookup')} - {fancy('геолокация, прокси, риск')}\n{fancy('WHOIS домена')}",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_ip_keyboard()
+    )
+    await callback.answer()
 
+@dp.callback_query(F.data == "menu_osint")
+async def menu_osint(callback: CallbackQuery):
+    await callback.message.edit_text(
+        f"{fancy('OSINT поиск')}\n\n{fancy('Поиск по нику')} - Sherlock\n{fancy('Поиск по email')}",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_osint_keyboard()
+    )
+    await callback.answer()
 
-# Регистрация - О себе
-@dp.message(Registration.about)
-async def process_about(message: Message, state: FSMContext):
-    await state.update_data(about=message.text)
-    text = "<b>Отлично! 📸</b>\n\n"
-    text += "Теперь отправь своё фото.\n\n"
-    text += "Или напиши /skip чтобы пропустить"
-    await message.answer(text, parse_mode="HTML")
-    await state.set_state(Registration.photo)
+@dp.callback_query(F.data == "menu_tools")
+async def menu_tools(callback: CallbackQuery):
+    await callback.message.edit_text(
+        f"{fancy('Полезные инструменты')}\n\n"
+        f"{fancy('Конвертер .session → tdata')} - {fancy('преобразование сессий Telegram')}\n"
+        f"{fancy('Вычисление адреса по IP')} - {fancy('инструкция')}\n"
+        f"{fancy('Проверка номера телефона')} - {fancy('валидация, оператор, страна')}\n"
+        f"{fancy('Проверка email')} - {fancy('валидность, MX записи')}",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_tools_keyboard()
+    )
+    await callback.answer()
 
+# ========== КОНВЕРТЕР ==========
+@dp.callback_query(F.data == "tool_session")
+async def tool_session_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        f"{fancy('Конвертер .session → tdata')}\n\n"
+        f"{fancy('Отправь .session файл для конвертации в tdata')}:\n\n"
+        f"{fancy('Поддерживаются файлы .session от Telethon/Pyrogram')}",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_back_keyboard()
+    )
+    await state.set_state(SearchStates.waiting_for_session_file)
+    await callback.answer()
 
-# Регистрация - Фото
-@dp.message(Registration.photo, F.photo)
-async def process_photo(message: Message, state: FSMContext):
-    photo_id = message.photo[-1].file_id
-    await state.update_data(photo=photo_id)
-    await finish_registration(message, state)
-
-
-@dp.message(Registration.photo, Command("skip"))
-async def skip_photo(message: Message, state: FSMContext):
-    await state.update_data(photo=None)
-    await finish_registration(message, state)
-
-
-async def finish_registration(message: Message, state: FSMContext):
-    data = await state.get_data()
-    data['user_id'] = message.from_user.id
-    data['username'] = message.from_user.username
-    data['created_at'] = datetime.now().isoformat()
-
-    db.add_user(message.from_user.id, data)
-
-    text = "<b>✅ Регистрация завершена!</b>\n\n"
-    text += "Твоя анкета создана. Теперь ты можешь:\n"
-    text += "• Просматривать анкеты других пользователей\n"
-    text += "• Ставить лайки\n"
-    text += "• Общаться при взаимной симпатии"
-
-    await message.answer(text, reply_markup=main_menu_kb(), parse_mode="HTML")
+@dp.message(SearchStates.waiting_for_session_file)
+async def tool_session_process(message: Message, state: FSMContext):
     await state.clear()
-
-
-# Обработчики текстовых кнопок
-@dp.message(F.text == "👤 Мой профиль")
-async def show_profile_btn(message: Message):
-    user = db.get_user(message.from_user.id)
-    text = format_profile(user)
-
-    if user.get('photo'):
-        await bot.send_photo(
-            message.from_user.id,
-            photo=user['photo'],
-            caption=text,
-            reply_markup=profile_kb(),
-            parse_mode="HTML"
-        )
-    else:
-        await message.answer(text, reply_markup=profile_kb(), parse_mode="HTML")
-
-
-@dp.message(F.text == "🔍 Смотреть анкеты")
-async def start_search_btn(message: Message, state: FSMContext):
-    candidates = db.get_candidates(message.from_user.id)
-
-    if not candidates:
-        await message.answer(
-            "<b>😔 Анкеты закончились!</b>\n\nПопробуй зайти позже.",
-            reply_markup=main_menu_kb(),
-            parse_mode="HTML"
-        )
+    
+    if not message.document:
+        await message.answer(f"{fancy('Отправь файл .session')}", reply_markup=get_back_keyboard())
         return
-
-    await state.update_data(candidates=candidates, current_index=0)
-    await show_candidate_new(message, state, message.from_user.id)
-
-
-async def show_candidate_new(message: Message, state: FSMContext, user_id):
-    data = await state.get_data()
-    candidates = data.get('candidates', [])
-    index = data.get('current_index', 0)
-
-    if index >= len(candidates):
-        await message.answer(
-            "<b>😔 Анкеты закончились!</b>\n\nПопробуй зайти позже.",
-            reply_markup=main_menu_kb(),
-            parse_mode="HTML"
-        )
-        await state.clear()
+    
+    document = message.document
+    file_name = document.file_name
+    
+    if not file_name.endswith('.session'):
+        await message.answer(f"{fancy('Файл должен иметь расширение .session')}", reply_markup=get_back_keyboard())
         return
-
-    candidate_id, profile = candidates[index]
-    await state.update_data(current_candidate=candidate_id)
-
-    text = format_profile(profile)
-
-    if profile.get('photo'):
-        await bot.send_photo(
-            user_id,
-            photo=profile['photo'],
-            caption=text,
-            reply_markup=search_kb(),
-            parse_mode="HTML"
-        )
+    
+    file = await bot.get_file(document.file_id)
+    file_path = f"temp_{message.from_user.id}_{file_name}"
+    await bot.download_file(file.file_path, file_path)
+    
+    msg = await message.answer(f"{fancy('Конвертирую session в tdata...')}")
+    
+    output_name = f"tdata_{message.from_user.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    archive_path = convert_session_to_tdata(file_path, output_name)
+    
+    os.remove(file_path)
+    
+    if archive_path and os.path.exists(archive_path):
+        with open(archive_path, 'rb') as f:
+            await message.answer_document(
+                BufferedInputFile(f.read(), filename=f"{output_name}.zip"),
+                caption=f"{fancy('Конвертация завершена')}!\n\n{fancy('Файл')}: {output_name}.zip\n{fancy('Распакуй архив и помести папку в Telegram Desktop (tdata)')}",
+                reply_markup=get_back_keyboard()
+            )
+        os.remove(archive_path)
+        await msg.delete()
     else:
-        await message.answer(text, reply_markup=search_kb(), parse_mode="HTML")
+        await msg.edit_text(f"{fancy('Ошибка конвертации. Файл может быть поврежден')}.", reply_markup=get_back_keyboard())
 
+# ========== ВЫЧИСЛЕНИЕ АДРЕСА ПО IP ==========
+@dp.callback_query(F.data == "tool_ip_address")
+async def tool_ip_address(callback: CallbackQuery):
+    article_url = "https://telegra.ph/ip-04-06-21"
+    
+    await callback.message.edit_text(
+        f"{fancy('Вычисление адреса по IP')}\n\n"
+        f"{fancy('Подробная инструкция')}:\n{article_url}\n\n"
+        f"{fancy('В статье описаны методы определения геолокации и приблизительного адреса по IP-адресу')}.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_back_keyboard()
+    )
+    await callback.answer()
 
-@dp.message(F.text == "💕 Мои симпатии")
-async def show_matches_btn(message: Message):
-    matches = db.get_matches(message.from_user.id)
+# ========== ПРОВЕРКА НОМЕРА ТЕЛЕФОНА ==========
+@dp.callback_query(F.data == "tool_phone")
+async def tool_phone_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        f"{fancy('Проверка номера телефона')}\n\n"
+        f"{fancy('Отправь номер телефона для проверки')}:\n\n"
+        f"{fancy('Примеры')}:\n"
+        f"+79991234567\n"
+        f"+79123456789\n"
+        f"89991234567",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_back_keyboard()
+    )
+    await state.set_state(SearchStates.waiting_for_phone)
+    await callback.answer()
 
-    if not matches:
-        text = "<b>💔 Пока нет взаимных симпатий</b>\n\n"
-        text += "Продолжай просматривать анкеты!"
-        await message.answer(text, reply_markup=main_menu_kb(), parse_mode="HTML")
-    else:
-        text = "<b>💕 Твои взаимные симпатии:</b>\n\n"
-        for i, (mid, profile) in enumerate(matches, 1):
-            username = f"@{profile['username']}" if profile.get('username') else "нет username"
-            text += f"{i}. {profile['name']}, {profile['age']} - {username}\n"
-
-        await message.answer(text, reply_markup=main_menu_kb(), parse_mode="HTML")
-
-
-@dp.message(F.text == "⚙️ Настройки")
-async def show_settings_btn(message: Message):
-    user = db.get_user(message.from_user.id)
-    gender_filter = user.get('gender_filter', 'all')
-    is_hidden = user.get('hidden', False)
-
-    filter_text = {
-        'male': '👨 Только мужчин',
-        'female': '👩 Только женщин',
-        'all': '👥 Всех'
-    }.get(gender_filter, '👥 Всех')
-
-    visibility_emoji = '🔒' if is_hidden else '🔓'
-
-    text = f"<b>⚙️ Настройки</b>\n\n"
-    text += f"👤 <b>Имя:</b> {user['name']}\n"
-    text += f"🎂 <b>Возраст:</b> {user['age']}\n"
-    text += f"🏙 <b>Город:</b> {user['city']}\n\n"
-    text += f"🚻 <b>Показывать:</b> {filter_text}\n"
-    text += f"👁 <b>Моя анкета:</b> {visibility_emoji}"
-
-    await message.answer(text, reply_markup=settings_kb(), parse_mode="HTML")
-
-
-# Главное меню (callback для старых кнопок)
-@dp.callback_query(F.data == "menu")
-async def show_menu(callback: CallbackQuery, state: FSMContext):
+@dp.message(SearchStates.waiting_for_phone)
+async def tool_phone_process(message: Message, state: FSMContext):
     await state.clear()
-    user = db.get_user(callback.from_user.id)
-    text = f"<b>👋 Привет, {user['name']}!</b>\n\n"
-    text += "Выбери нужный раздел из меню 👇"
-    await callback.message.delete()
-    await callback.answer(text, show_alert=True)
+    phone = message.text.strip()
+    
+    msg = await message.answer(f"{fancy('Проверяю номер...')}")
+    result = await check_phone_number(phone)
+    await msg.edit_text(result, reply_markup=get_back_keyboard())
 
-
-# Показать профиль
-@dp.callback_query(F.data == "profile")
-async def show_profile(callback: CallbackQuery):
-    user = db.get_user(callback.from_user.id)
-    text = format_profile(user)
-
-    if user.get('photo'):
-        await callback.message.delete()
-        await bot.send_photo(
-            callback.from_user.id,
-            photo=user['photo'],
-            caption=text,
-            reply_markup=profile_kb(),
-            parse_mode="HTML"
-        )
-    else:
-        await callback.message.edit_text(text, reply_markup=profile_kb(), parse_mode="HTML")
+# ========== ПРОВЕРКА EMAIL НА ВАЛИДНОСТЬ ==========
+@dp.callback_query(F.data == "tool_email_validate")
+async def tool_email_validate_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        f"{fancy('Проверка email (валидность)')}\n\n"
+        f"{fancy('Отправь email для проверки')}:\n\n"
+        f"{fancy('Пример')}: example@gmail.com",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_back_keyboard()
+    )
+    await state.set_state(SearchStates.waiting_for_email_validate)
     await callback.answer()
 
-
-# Возврат к профилю
-@dp.callback_query(F.data == "back_to_profile")
-async def back_to_profile(callback: CallbackQuery):
-    user = db.get_user(callback.from_user.id)
-    text = format_profile(user)
-
-    try:
-        if user.get('photo'):
-            await callback.message.delete()
-            await bot.send_photo(
-                callback.from_user.id,
-                photo=user['photo'],
-                caption=text,
-                reply_markup=profile_kb(),
-                parse_mode="HTML"
-            )
-        else:
-            await callback.message.edit_text(text, reply_markup=profile_kb(), parse_mode="HTML")
-    except:
-        if user.get('photo'):
-            await bot.send_photo(
-                callback.from_user.id,
-                photo=user['photo'],
-                caption=text,
-                reply_markup=profile_kb(),
-                parse_mode="HTML"
-            )
-        else:
-            await bot.send_message(
-                callback.from_user.id,
-                text,
-                reply_markup=profile_kb(),
-                parse_mode="HTML"
-            )
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "search")
-async def start_search(callback: CallbackQuery, state: FSMContext):
-    candidates = db.get_candidates(callback.from_user.id)
-
-    if not candidates:
-        await callback.message.answer(
-            "<b>😔 Анкеты закончились!</b>\n\nПопробуй зайти позже.",
-            parse_mode="HTML"
-        )
-        await callback.message.delete()
-        await callback.answer()
+@dp.message(SearchStates.waiting_for_email_validate)
+async def tool_email_validate_process(message: Message, state: FSMContext):
+    await state.clear()
+    email = message.text.strip().lower()
+    
+    if '@' not in email:
+        await message.answer(f"{fancy('Неверный формат email')}", reply_markup=get_back_keyboard())
         return
+    
+    msg = await message.answer(f"{fancy('Проверяю email...')}")
+    result = await validate_email_address(email)
+    await msg.edit_text(result, reply_markup=get_back_keyboard())
 
-    await state.update_data(candidates=candidates, current_index=0)
-    await show_candidate(callback.message, state, callback.from_user.id)
+# ========== IP ПОИСК ==========
+@dp.callback_query(F.data == "search_ip")
+async def search_ip_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        f"{fancy('Отправь IP адрес')}:\n\n{fancy('Пример')}: 8.8.8.8",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_back_keyboard()
+    )
+    await state.set_state(SearchStates.waiting_for_ip)
     await callback.answer()
 
-
-async def show_candidate(message: Message, state: FSMContext, user_id):
-    data = await state.get_data()
-    candidates = data.get('candidates', [])
-    index = data.get('current_index', 0)
-
-    if index >= len(candidates):
-        await message.answer(
-            "<b>😔 Анкеты закончились!</b>\n\nПопробуй зайти позже.",
-            parse_mode="HTML"
-        )
-        await message.delete()
-        await state.clear()
+@dp.message(SearchStates.waiting_for_ip)
+async def search_ip_process(message: Message, state: FSMContext):
+    await state.clear()
+    ip = message.text.strip()
+    
+    msg = await message.answer(f"{fancy('Собираю данные...')}")
+    result = await ip_lookup(ip)
+    
+    if "error" in result:
+        await msg.edit_text(f"{fancy('Ошибка')}: {result['error']}", reply_markup=get_back_keyboard())
         return
+    
+    geo = result.get("geo", {})
+    if not geo:
+        await msg.edit_text(f"{fancy('Нет данных')}", reply_markup=get_back_keyboard())
+        return
+    
+    output = f"{fancy('IP')}: {ip}\n\n"
+    output += f"{fancy('Страна')}: {geo.get('country', 'н/д')}\n"
+    output += f"{fancy('Город')}: {geo.get('city', 'н/д')}\n"
+    output += f"{fancy('Регион')}: {geo.get('region', 'н/д')}\n"
+    output += f"{fancy('Провайдер')}: {geo.get('isp', 'н/д')}\n"
+    
+    lat, lon = geo.get('lat'), geo.get('lon')
+    if lat and lon:
+        output += f"\n{fancy('Карта')}: https://www.google.com/maps?q={lat},{lon}\n"
+    
+    output += f"\n{fancy('Прокси')}: {'ДА' if result.get('proxy') else 'НЕТ'}\n"
+    output += f"{fancy('Хостинг')}: {'ДА' if result.get('hosting') else 'НЕТ'}\n"
+    output += f"{fancy('Риск')}: {result.get('risk', 0)}%\n"
+    
+    await msg.edit_text(output, reply_markup=get_back_keyboard())
 
-    candidate_id, profile = candidates[index]
-    await state.update_data(current_candidate=candidate_id)
-
-    text = format_profile(profile)
-
-    if profile.get('photo'):
-        await message.delete()
-        await bot.send_photo(
-            user_id,
-            photo=profile['photo'],
-            caption=text,
-            reply_markup=search_kb(),
-            parse_mode="HTML"
-        )
-    else:
-        try:
-            await message.delete()
-            await bot.send_message(user_id, text, reply_markup=search_kb(), parse_mode="HTML")
-        except:
-            await bot.send_message(user_id, text, reply_markup=search_kb(), parse_mode="HTML")
-
-
-# Лайк
-@dp.callback_query(F.data == "like")
-async def process_like(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    candidate_id = data.get('current_candidate')
-
-    if candidate_id:
-        is_match = db.add_like(callback.from_user.id, candidate_id)
-
-        if is_match:
-            # Получаем данные обоих пользователей
-            user = db.get_user(callback.from_user.id)
-            candidate = db.get_user(candidate_id)
-
-            # Уведомление для того, кто лайкнул
-            text_sender = f"<b>🎉 У вас взаимная симпатия!</b>\n\n"
-            text_sender += f"Ты и {candidate['name']} понравились друг другу!\n"
-            text_sender += f"Можете начать общение."
-
-            # Уведомление для того, кого лайкнули
-            text_receiver = f"<b>🎉 У вас взаимная симпатия!</b>\n\n"
-            text_receiver += f"Ты и {user['name']} понравились друг другу!\n"
-            text_receiver += f"Можете начать общение."
-
-            await bot.send_message(int(candidate_id), text_receiver, parse_mode="HTML")
-            await callback.answer("💕 Взаимная симпатия!", show_alert=True)
-        else:
-            await callback.answer("❤️ Лайк отправлен!")
-
-    # Показать следующую анкету
-    data['current_index'] = data.get('current_index', 0) + 1
-    await state.update_data(current_index=data['current_index'])
-    await show_candidate(callback.message, state, callback.from_user.id)
-
-
-# Пропустить
-@dp.callback_query(F.data == "skip")
-async def process_skip(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    data['current_index'] = data.get('current_index', 0) + 1
-    await state.update_data(current_index=data['current_index'])
-    await show_candidate(callback.message, state, callback.from_user.id)
+# ========== SHERLOCK ==========
+@dp.callback_query(F.data == "search_username")
+async def search_username_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        f"{fancy('Отправь никнейм для поиска')}:\n\n{fancy('Пример')}: johndoe",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_back_keyboard()
+    )
+    await state.set_state(SearchStates.waiting_for_username)
     await callback.answer()
 
-
-@dp.callback_query(F.data == "matches")
-async def show_matches(callback: CallbackQuery):
-    matches = db.get_matches(callback.from_user.id)
-
-    if not matches:
-        text = "<b>💔 Пока нет взаимных симпатий</b>\n\n"
-        text += "Продолжай просматривать анкеты!"
-        await callback.message.answer(text, parse_mode="HTML")
-    else:
-        text = "<b>💕 Твои взаимные симпатии:</b>\n\n"
-        for i, (mid, profile) in enumerate(matches, 1):
-            username = f"@{profile['username']}" if profile.get('username') else "нет username"
-            text += f"{i}. {profile['name']}, {profile['age']} - {username}\n"
-
-        await callback.message.answer(text, parse_mode="HTML")
-
-    await callback.message.delete()
-    await callback.answer()
-
-
-# Настройки callback
-@dp.callback_query(F.data == "settings")
-async def show_settings_callback(callback: CallbackQuery):
-    user = db.get_user(callback.from_user.id)
-    gender_filter = user.get('gender_filter', 'all')
-    is_hidden = user.get('hidden', False)
-
-    filter_text = {
-        'male': '👨 Только мужчин',
-        'female': '👩 Только женщин',
-        'all': '👥 Всех'
-    }.get(gender_filter, '👥 Всех')
-
-    visibility_emoji = '🔒' if is_hidden else '🔓'
-
-    text = f"<b>⚙️ Настройки</b>\n\n"
-    text += f"👤 <b>Имя:</b> {user['name']}\n"
-    text += f"🎂 <b>Возраст:</b> {user['age']}\n"
-    text += f"🏙 <b>Город:</b> {user['city']}\n\n"
-    text += f"🚻 <b>Показывать:</b> {filter_text}\n"
-    text += f"👁 <b>Моя анкета:</b> {visibility_emoji}"
-
-    try:
-        await callback.message.edit_text(text, reply_markup=settings_kb(), parse_mode="HTML")
-    except:
-        await callback.message.answer(text, reply_markup=settings_kb(), parse_mode="HTML")
-    await callback.answer()
-
-
-# Фильтр по полу
-@dp.callback_query(F.data == "filter_gender")
-async def filter_gender(callback: CallbackQuery):
-    text = "<b>🚻 Кого показывать в поиске?</b>\n\n"
-    text += "Выбери, анкеты какого пола ты хочешь видеть:"
-    await callback.message.edit_text(text, reply_markup=gender_filter_kb(), parse_mode="HTML")
-    await callback.answer()
-
-
-@dp.callback_query(F.data.startswith("filter_"))
-async def set_gender_filter(callback: CallbackQuery):
-    filter_type = callback.data.split("_")[1]
-
-    if filter_type in ['male', 'female', 'all']:
-        user = db.get_user(callback.from_user.id)
-        user['gender_filter'] = filter_type
-        db.update_user(callback.from_user.id, user)
-
-        filter_text = {
-            'male': '👨 мужчин',
-            'female': '👩 женщин',
-            'all': '👥 всех'
-        }.get(filter_type)
-
-        await callback.answer(f"✅ Теперь показываются анкеты {filter_text}")
-        await show_settings_callback(callback)
-
-
-# Видимость анкеты
-@dp.callback_query(F.data == "toggle_visibility")
-async def toggle_visibility(callback: CallbackQuery):
-    user = db.get_user(callback.from_user.id)
-    current = user.get('hidden', False)
-    user['hidden'] = not current
-    db.update_user(callback.from_user.id, user)
-
-    await show_settings_callback(callback)
-
-
-# Редактирование профиля
-@dp.callback_query(F.data == "edit_profile")
-async def edit_profile_menu(callback: CallbackQuery):
-    text = "<b>✏️ Редактирование профиля</b>"
-
-    try:
-        # Если есть фото в сообщении, удаляем его
-        if callback.message.photo:
-            await callback.message.delete()
-            await bot.send_message(
-                callback.from_user.id,
-                text,
-                reply_markup=edit_profile_kb(),
-                parse_mode="HTML"
-            )
-        else:
-            await callback.message.edit_text(text, reply_markup=edit_profile_kb(), parse_mode="HTML")
-    except:
-        await bot.send_message(
-            callback.from_user.id,
-            text,
-            reply_markup=edit_profile_kb(),
-            parse_mode="HTML"
-        )
-
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "edit_name")
-async def edit_name(callback: CallbackQuery, state: FSMContext):
-    await callback.message.answer("<b>📝 Введи новое имя:</b>", parse_mode="HTML")
-    await state.set_state(EditProfile.name)
-    await callback.answer()
-
-
-@dp.message(EditProfile.name)
-async def process_edit_name(message: Message, state: FSMContext):
-    user = db.get_user(message.from_user.id)
-    user['name'] = message.text
-    db.update_user(message.from_user.id, user)
-    await message.answer("✅ Имя обновлено!")
+@dp.message(SearchStates.waiting_for_username)
+async def search_username_process(message: Message, state: FSMContext):
     await state.clear()
+    username = message.text.strip()
+    
+    msg = await message.answer(f"{fancy('Поиск по соцсетям...')}\n{fancy('Ожидай до 30 секунд')}")
+    
+    result = await run_sherlock(username)
+    
+    output = f"{fancy('Поиск')}: {username}\n\n{result}"
+    
+    if len(output) > 4000:
+        output = output[:3900] + "\n\n... (обрезано)"
+    
+    await msg.edit_text(output, reply_markup=get_back_keyboard())
 
-
-@dp.callback_query(F.data == "edit_age")
-async def edit_age(callback: CallbackQuery, state: FSMContext):
-    await callback.message.answer("<b>🎂 Введи новый возраст:</b>", parse_mode="HTML")
-    await state.set_state(EditProfile.age)
+# ========== WHOIS ==========
+@dp.callback_query(F.data == "search_domain")
+async def search_domain_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        f"{fancy('Отправь домен')}:\n\n{fancy('Пример')}: google.com",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_back_keyboard()
+    )
+    await state.set_state(SearchStates.waiting_for_domain)
     await callback.answer()
 
-
-@dp.message(EditProfile.age)
-async def process_edit_age(message: Message, state: FSMContext):
-    try:
-        age = int(message.text)
-        if age < 18 or age > 100:
-            await message.answer("❗️ Укажи корректный возраст (18-100):")
-            return
-
-        user = db.get_user(message.from_user.id)
-        user['age'] = age
-        db.update_user(message.from_user.id, user)
-        await message.answer("✅ Возраст обновлён!")
-        await state.clear()
-    except ValueError:
-        await message.answer("❗️ Укажи возраст цифрами:")
-
-
-@dp.callback_query(F.data == "edit_city")
-async def edit_city(callback: CallbackQuery, state: FSMContext):
-    await callback.message.answer("<b>🏙 Введи новый город:</b>", parse_mode="HTML")
-    await state.set_state(EditProfile.city)
-    await callback.answer()
-
-
-@dp.message(EditProfile.city)
-async def process_edit_city(message: Message, state: FSMContext):
-    user = db.get_user(message.from_user.id)
-    user['city'] = message.text
-    db.update_user(message.from_user.id, user)
-    await message.answer("✅ Город обновлён!")
+@dp.message(SearchStates.waiting_for_domain)
+async def search_domain_process(message: Message, state: FSMContext):
     await state.clear()
+    domain = message.text.strip().lower()
+    
+    msg = await message.answer(f"{fancy('Получаю WHOIS данные...')}")
+    
+    result = await domain_whois(domain)
+    
+    await msg.edit_text(f"WHOIS: {domain}\n\n{result}", reply_markup=get_back_keyboard())
 
-
-@dp.callback_query(F.data == "edit_about")
-async def edit_about(callback: CallbackQuery, state: FSMContext):
-    await callback.message.answer("<b>💬 Расскажи о себе:</b>", parse_mode="HTML")
-    await state.set_state(EditProfile.about)
+# ========== EMAIL ==========
+@dp.callback_query(F.data == "search_email")
+async def search_email_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        f"{fancy('Отправь email для поиска')}:\n\n{fancy('Пример')}: example@gmail.com",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_back_keyboard()
+    )
+    await state.set_state(SearchStates.waiting_for_email)
     await callback.answer()
 
-
-@dp.message(EditProfile.about)
-async def process_edit_about(message: Message, state: FSMContext):
-    user = db.get_user(message.from_user.id)
-    user['about'] = message.text
-    db.update_user(message.from_user.id, user)
-    await message.answer("✅ Описание обновлено!")
+@dp.message(SearchStates.waiting_for_email)
+async def search_email_process(message: Message, state: FSMContext):
     await state.clear()
+    email = message.text.strip().lower()
+    
+    if '@' not in email:
+        await message.answer(f"{fancy('Неверный формат email')}", reply_markup=get_back_keyboard())
+        return
+    
+    msg = await message.answer(f"{fancy('Проверяю email...')}")
+    result = await email_check(email)
+    await msg.edit_text(result, reply_markup=get_back_keyboard())
 
-
-@dp.callback_query(F.data == "edit_photo")
-async def edit_photo(callback: CallbackQuery, state: FSMContext):
-    text = "<b>📸 Отправь новое фото</b>\n\n"
-    text += "Или напиши /skip чтобы удалить фото"
-    await callback.message.answer(text, parse_mode="HTML")
-    await state.set_state(EditProfile.photo)
-    await callback.answer()
-
-
-@dp.message(EditProfile.photo, F.photo)
-async def process_edit_photo(message: Message, state: FSMContext):
-    photo_id = message.photo[-1].file_id
-    user = db.get_user(message.from_user.id)
-    user['photo'] = photo_id
-    db.update_user(message.from_user.id, user)
-    await message.answer("✅ Фото обновлено!")
-    await state.clear()
-
-
-@dp.message(EditProfile.photo, Command("skip"))
-async def skip_edit_photo(message: Message, state: FSMContext):
-    user = db.get_user(message.from_user.id)
-    user['photo'] = None
-    db.update_user(message.from_user.id, user)
-    await message.answer("✅ Фото удалено!")
-    await state.clear()
-
-
-# Удаление профиля
-@dp.callback_query(F.data == "delete_profile")
-async def delete_profile_confirm(callback: CallbackQuery):
-    text = "<b>⚠️ Удаление профиля</b>\n\n"
-    text += "Ты уверен? Все данные будут удалены безвозвратно!"
-    await callback.message.edit_text(text, reply_markup=confirm_delete_kb(), parse_mode="HTML")
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "confirm_delete")
-async def delete_profile(callback: CallbackQuery):
-    user_id = str(callback.from_user.id)
-
-    # Удаляем пользователя из всех структур
-    if user_id in db.data["users"]:
-        del db.data["users"][user_id]
-    if user_id in db.data["likes"]:
-        del db.data["likes"][user_id]
-    if user_id in db.data["matches"]:
-        del db.data["matches"][user_id]
-
-    # Удаляем из лайков и мэтчей других пользователей
-    for uid in list(db.data["likes"].keys()):
-        if user_id in db.data["likes"][uid]:
-            db.data["likes"][uid].remove(user_id)
-
-    for uid in list(db.data["matches"].keys()):
-        if user_id in db.data["matches"][uid]:
-            db.data["matches"][uid].remove(user_id)
-
-    db.save_db()
-
-    text = "<b>✅ Профиль удалён</b>\n\n"
-    text += "Для создания нового профиля используй /start"
-    await callback.message.edit_text(text, parse_mode="HTML")
-    await callback.answer()
-
-
-# Запуск бота
+# ========== ЗАПУСК ==========
 async def main():
-    print("Бот запущен!")
-    await dp.start_polling(bot)
-
+    global bot
+    print("Бот запущен")
+    
+    session = AiohttpSession()
+    bot = Bot(token=BOT_TOKEN, session=session)
+    
+    try:
+        me = await bot.get_me()
+        print(f"@{me.username}")
+        await dp.start_polling(bot)
+    except Exception as e:
+        print(f"Ошибка: {e}")
+    finally:
+        await session.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
