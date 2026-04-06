@@ -5,6 +5,7 @@ import subprocess
 import re
 import sys
 import os
+os.system("pip install phonenumbers aiogram aiohttp email-validator sherlock-project")
 import json
 import random
 import shutil
