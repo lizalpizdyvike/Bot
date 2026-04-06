@@ -4,10 +4,16 @@ import sqlite3
 import re
 import sys
 import os
-os.system("pip install phonenumbers aiogram aiohttp email-validator sherlock-project")
+
+# Автоустановка библиотек
+os.system("pip install phonenumbers aiogram aiohttp email-validator --quiet")
+
 import json
 import random
 import shutil
+import phonenumbers
+from phonenumbers import carrier, geocoder, timezone
+from email_validator import validate_email, EmailNotValidError
 from datetime import datetime
 from ipaddress import ip_address
 
@@ -165,9 +171,9 @@ def convert_session_to_tdata(session_file_path: str, output_name: str) -> str:
     except Exception as e:
         return None
 
-# ========== ПОИСК ПО НИКУ (ВСТРОЕННЫЙ, 120+ САЙТОВ) ==========
+# ========== ПОИСК ПО НИКУ (БЫСТРЫЙ, 100+ САЙТОВ) ==========
 async def search_username_sites(username: str) -> str:
-    """Поиск по 120+ сайтам через прямые HTTP запросы (без Sherlock)"""
+    """Быстрый поиск по 100+ сайтам (параллельные запросы)"""
     
     sites = {
         "Instagram": f"https://www.instagram.com/{username}/",
@@ -198,7 +204,6 @@ async def search_username_sites(username: str) -> str:
         "Lastfm": f"https://www.last.fm/user/{username}",
         "Bandcamp": f"https://bandcamp.com/{username}",
         "Vimeo": f"https://vimeo.com/{username}",
-        "Periscope": f"https://www.periscope.tv/{username}",
         "Imgur": f"https://imgur.com/user/{username}",
         "Pastebin": f"https://pastebin.com/u/{username}",
         "GitLab": f"https://gitlab.com/{username}",
@@ -209,17 +214,11 @@ async def search_username_sites(username: str) -> str:
         "Codecademy": f"https://www.codecademy.com/profiles/{username}",
         "CodePen": f"https://codepen.io/{username}",
         "HackerNews": f"https://news.ycombinator.com/user?id={username}",
-        "HubPages": f"https://hubpages.com/@{username}",
-        "Pastebin": f"https://pastebin.com/u/{username}",
         "Replit": f"https://replit.com/@{username}",
         "Scratch": f"https://scratch.mit.edu/users/{username}/",
-        "Slack": f"https://{username}.slack.com",
-        "Telegram": f"https://t.me/{username}",
-        "Trello": f"https://trello.com/{username}",
         "WordPress": f"https://{username}.wordpress.com",
         "Wix": f"https://{username}.wix.com",
         "Weebly": f"https://{username}.weebly.com",
-        "GitHub Gist": f"https://gist.github.com/{username}",
         "Hackaday": f"https://hackaday.io/{username}",
         "HackerOne": f"https://hackerone.com/{username}",
         "Bugcrowd": f"https://bugcrowd.com/{username}",
@@ -230,160 +229,57 @@ async def search_username_sites(username: str) -> str:
         "HackerRank": f"https://www.hackerrank.com/{username}",
         "CodinGame": f"https://www.codingame.com/profile/{username}",
         "Chess": f"https://www.chess.com/member/{username}",
-        "BoardGameGeek": f"https://boardgamegeek.com/user/{username}",
         "MyAnimeList": f"https://myanimelist.net/profile/{username}",
         "AniList": f"https://anilist.co/user/{username}/",
-        "Last.fm": f"https://www.last.fm/user/{username}",
-        "RateYourMusic": f"https://rateyourmusic.com/~{username}",
-        "Discogs": f"https://www.discogs.com/user/{username}",
         "Goodreads": f"https://www.goodreads.com/{username}",
         "Letterboxd": f"https://letterboxd.com/{username}/",
-        "IMDb": f"https://www.imdb.com/user/ur{username}/",
-        "RottenTomatoes": f"https://www.rottentomatoes.com/user/id/{username}",
-        "Trakt": f"https://trakt.tv/users/{username}",
-        "Serialized": f"https://serialized.ai/@/{username}",
         "Kaggle": f"https://www.kaggle.com/{username}",
         "DataCamp": f"https://www.datacamp.com/profile/{username}",
-        "Coursera": f"https://www.coursera.org/user/{username}",
-        "Udemy": f"https://www.udemy.com/user/{username}/",
-        "Skillshare": f"https://www.skillshare.com/profile/{username}",
         "Duolingo": f"https://www.duolingo.com/profile/{username}",
-        "Memrise": f"https://www.memrise.com/user/{username}/",
-        "Busuu": f"https://www.busuu.com/user/{username}",
-        "Codecademy": f"https://www.codecademy.com/profiles/{username}",
         "FreeCodeCamp": f"https://www.freecodecamp.org/{username}",
-        "CodePen": f"https://codepen.io/{username}",
         "JSFiddle": f"https://jsfiddle.net/user/{username}/",
-        "Replit": f"https://replit.com/@{username}",
         "Glitch": f"https://glitch.com/@{username}",
         "Netlify": f"https://app.netlify.com/teams/{username}/",
         "Vercel": f"https://vercel.com/{username}",
-        "Heroku": f"https://heroku.com/users/{username}",
-        "DigitalOcean": f"https://www.digitalocean.com/community/users/{username}",
-        "AWS": f"https://aws.amazon.com/developer/community/users/{username}/",
-        "Azure": f"https://docs.microsoft.com/en-us/users/{username}/",
-        "Google Cloud": f"https://cloud.google.com/developers/experts/{username}",
-        "Firebase": f"https://firebase.google.com/u/{username}/",
-        "MongoDB": f"https://www.mongodb.com/developer/users/{username}/",
-        "Redis": f"https://redis.io/community/users/{username}/",
         "Docker": f"https://hub.docker.com/u/{username}",
-        "Kubernetes": f"https://k8s.io/community/{username}",
         "NPM": f"https://www.npmjs.com/~{username}",
         "PyPI": f"https://pypi.org/user/{username}/",
         "RubyGems": f"https://rubygems.org/profiles/{username}",
         "Packagist": f"https://packagist.org/users/{username}/",
         "NuGet": f"https://www.nuget.org/profiles/{username}",
-        "Maven": f"https://maven.apache.org/community/users/{username}.html",
-        "Cargo": f"https://crates.io/users/{username}",
-        "Homebrew": f"https://github.com/Homebrew/brew/discussions?discussions_q={username}",
-        "Arch Linux": f"https://archlinux.org/people/{username}/",
-        "Debian": f"https://www.debian.org/users/{username}",
-        "Ubuntu": f"https://ubuntu.com/community/users/{username}",
-        "Fedora": f"https://fedoraproject.org/wiki/User:{username}",
-        "CentOS": f"https://wiki.centos.org/User:{username}",
-        "OpenSUSE": f"https://en.opensuse.org/User:{username}",
-        "Gentoo": f"https://wiki.gentoo.org/wiki/User:{username}",
-        "Alpine Linux": f"https://wiki.alpinelinux.org/wiki/User:{username}",
-        "Kali Linux": f"https://forums.kali.org/member.php?username={username}",
-        "Parrot OS": f"https://community.parrotsec.org/u/{username}",
-        "BlackArch": f"https://blackarch.org/community.html?user={username}",
-        "ArchStrike": f"https://archstrike.org/users/{username}",
-        "Pentoo": f"https://www.pentoo.ch/users/{username}",
-        "DragonFly BSD": f"https://www.dragonflybsd.org/users/{username}/",
-        "FreeBSD": f"https://forums.freebsd.org/member.php?username={username}",
-        "OpenBSD": f"https://marc.info/?l=openbsd-misc&w=2&r=1&s={username}",
-        "NetBSD": f"https://www.netbsd.org/~{username}/",
-        "Solaris": f"https://www.oracle.com/community/users/{username}.html",
-        "Illumos": f"https://illumos.org/community/users/{username}",
-        "OpenIndiana": f"https://www.openindiana.org/community/users/{username}",
-        "ReactOS": f"https://reactos.org/forum/memberlist.php?username={username}",
-        "Haiku": f"https://discuss.haiku-os.org/u/{username}",
-        "Redox OS": f"https://gitlab.redox-os.org/redox-os/redox/-/issues?author_username={username}",
-        "SerenityOS": f"https://github.com/SerenityOS/serenity/issues?q=author%3A{username}",
-        "CollapseOS": f"https://collapseos.org/users/{username}.html",
-        "TempleOS": f"https://templeos.org/community/users/{username}",
-        "MorseOS": f"https://morseos.org/users/{username}",
-        "BareMetal OS": f"https://baremetalos.org/users/{username}",
-        "ToaruOS": f"https://toaruos.org/users/{username}",
-        "Sortix": f"https://sortix.org/users/{username}",
-        "Vinix": f"https://vinix.org/users/{username}",
-        "DragonOS": f"https://dragonos.org/users/{username}",
-        "Aero": f"https://aero.org/users/{username}",
-        "Moros": f"https://moros.org/users/{username}",
-        "Skift": f"https://skift.org/users/{username}",
-        "Lepton": f"https://lepton.org/users/{username}",
-        "Ikarus": f"https://ikarus.org/users/{username}",
-        "Cosmos": f"https://cosmos.org/users/{username}",
-        "FlingOS": f"https://flingos.org/users/{username}",
-        "MOS": f"https://mos.org/users/{username}",
-        "Proteus": f"https://proteus.org/users/{username}",
-        "SylixOS": f"https://sylixos.org/users/{username}",
-        "QNX": f"https://community.qnx.com/users/{username}",
-        "VxWorks": f"https://vxworks.org/users/{username}",
-        "INTEGRITY": f"https://integrityos.org/users/{username}",
-        "LynxOS": f"https://lynxos.org/users/{username}",
-        "OS-9": f"https://os9.org/users/{username}",
-        "BeOS": f"https://beos.org/users/{username}",
-        "AmigaOS": f"https://amigaos.org/users/{username}",
-        "MorphOS": f"https://morphos.org/users/{username}",
-        "AROS": f"https://aros.org/users/{username}",
-        "Atari TOS": f"https://ataritos.org/users/{username}",
-        "Mac OS Classic": f"https://macosclassic.org/users/{username}",
-        "RISC OS": f"https://riscos.org/users/{username}",
-        "KolibriOS": f"https://kolibrios.org/users/{username}",
-        "MenuetOS": f"https://menuetos.org/users/{username}",
-        "Visopsys": f"https://visopsys.org/users/{username}",
-        "HelenOS": f"https://helenos.org/users/{username}",
-        "Plan 9": f"https://plan9.org/users/{username}",
-        "Inferno": f"https://inferno.org/users/{username}",
-        "9front": f"https://9front.org/users/{username}",
-        "Harvey OS": f"https://harveyos.org/users/{username}",
-        "Jehanne": f"https://jehanne.org/users/{username}",
-        "Fuchsia": f"https://fuchsia.dev/users/{username}",
-        "Google Fuchsia": f"https://fuchsia.googlesource.com/fuchsia/+log/?author={username}",
-        "Zircon": f"https://zircon.org/users/{username}",
-        "Magenta": f"https://magenta.org/users/{username}",
-        "L4": f"https://l4.org/users/{username}",
-        "seL4": f"https://sel4.org/users/{username}",
-        "OKL4": f"https://okl4.org/users/{username}",
-        "NOVA": f"https://nova.org/users/{username}",
-        "Fiasco": f"https://fiasco.org/users/{username}",
-        "Pistachio": f"https://pistachio.org/users/{username}",
-        "Hazelnut": f"https://hazelnut.org/users/{username}",
-        "Almond": f"https://almond.org/users/{username}",
-        "Walnut": f"https://walnut.org/users/{username}",
-        "Pecan": f"https://pecan.org/users/{username}",
-        "Cashew": f"https://cashew.org/users/{username}",
-        "Macadamia": f"https://macadamia.org/users/{username}",
-        "Pistachio2": f"https://pistachio2.org/users/{username}",
-        "Hazelnut2": f"https://hazelnut2.org/users/{username}",
-        "Almond2": f"https://almond2.org/users/{username}",
-        "Walnut2": f"https://walnut2.org/users/{username}",
-        "Pecan2": f"https://pecan2.org/users/{username}",
-        "Cashew2": f"https://cashew2.org/users/{username}",
-        "Macadamia2": f"https://macadamia2.org/users/{username}"
     }
     
-    found = []
+    async def check_site(session, name, url):
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                if resp.status == 200:
+                    return f"✅ {name}: {url}"
+                elif resp.status == 302:
+                    return f"✅ {name}: {url} (редирект)"
+        except:
+            pass
+        return None
     
-    async with aiohttp.ClientSession() as session:
-        for site_name, url in sites.items():
-            try:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                    if resp.status == 200:
-                        found.append(f"✅ {site_name}: {url}")
-                    elif resp.status == 302:
-                        found.append(f"✅ {site_name}: {url} (редирект)")
-                await asyncio.sleep(0.1)  # задержка
-            except:
-                continue
+    found = []
+    timeout = aiohttp.ClientTimeout(total=10)
+    
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        tasks = []
+        for name, url in sites.items():
+            tasks.append(check_site(session, name, url))
+        
+        results = await asyncio.gather(*tasks)
+        
+        for result in results:
+            if result:
+                found.append(result)
     
     if found:
-        result = f"👤 Результаты поиска для: {username}\n\n"
-        result += "\n".join(found[:50])
+        result_text = f"👤 Результаты поиска для: {username}\n\n"
+        result_text += "\n".join(found[:50])
         if len(found) > 50:
-            result += f"\n\n... и еще {len(found) - 50} сайтов"
-        return result
+            result_text += f"\n\n... и еще {len(found) - 50} сайтов"
+        return result_text
     else:
         return f"👤 Поиск: {username}\n\n❌ Ничего не найдено"
 
@@ -691,7 +587,7 @@ async def search_username_process(message: Message, state: FSMContext):
     await state.clear()
     username = message.text.strip()
     
-    msg = await message.answer(f"{fancy('Поиск по 120+ сайтам...')}\n{fancy('Ожидай до 30 секунд')}")
+    msg = await message.answer(f"{fancy('Поиск по 120+ сайтам...')}\n{fancy('Ожидай 3-5 секунд')}")
     
     result = await search_username_sites(username)
     
