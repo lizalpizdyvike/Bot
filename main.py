@@ -1,7 +1,6 @@
 import asyncio
 import aiohttp
 import sqlite3
-import subprocess
 import re
 import sys
 import os
@@ -9,9 +8,6 @@ os.system("pip install phonenumbers aiogram aiohttp email-validator sherlock-pro
 import json
 import random
 import shutil
-import phonenumbers
-from phonenumbers import carrier, geocoder, timezone
-from email_validator import validate_email, EmailNotValidError
 from datetime import datetime
 from ipaddress import ip_address
 
@@ -76,8 +72,6 @@ class SearchStates(StatesGroup):
     waiting_for_domain = State()
     waiting_for_email = State()
     waiting_for_session_file = State()
-    waiting_for_phone = State()
-    waiting_for_email_validate = State()
 
 # ========== БД ==========
 conn = sqlite3.connect("osint_bot.db")
@@ -131,9 +125,6 @@ def get_osint_keyboard():
 def get_tools_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=fancy("Конвертер .session → tdata"), callback_data="tool_session")],
-        [InlineKeyboardButton(text=fancy("Вычисление адреса по IP"), callback_data="tool_ip_address")],
-        [InlineKeyboardButton(text=fancy("Проверка номера телефона"), callback_data="tool_phone")],
-        [InlineKeyboardButton(text=fancy("Проверка email (валидность)"), callback_data="tool_email_validate")],
         [InlineKeyboardButton(text=fancy("Назад"), callback_data="back_to_menu")]
     ])
 
@@ -174,57 +165,227 @@ def convert_session_to_tdata(session_file_path: str, output_name: str) -> str:
     except Exception as e:
         return None
 
-# ========== ПРОВЕРКА НОМЕРА ТЕЛЕФОНА ==========
-async def check_phone_number(phone: str) -> str:
-    try:
-        parsed = phonenumbers.parse(phone, None)
-        
-        if not phonenumbers.is_valid_number(parsed):
-            return f"Номер {phone} - НЕВАЛИДНЫЙ"
-        
-        country = geocoder.description_for_number(parsed, "ru")
-        operator = carrier.name_for_number(parsed, "ru")
-        timezones = timezone.time_zones_for_number(parsed)
-        
-        output = f"Номер: {phone}\n\n"
-        output += f"Статус: ВАЛИДНЫЙ\n"
-        output += f"Страна: {country}\n"
-        output += f"Оператор: {operator if operator else 'Не определен'}\n"
-        output += f"Часовой пояс: {', '.join(timezones)}\n"
-        
-        if phonenumbers.is_possible_number(parsed):
-            output += f"Тип: Мобильный/Стационарный\n"
-        
-        return output
-    except phonenumbers.NumberParseException as e:
-        return f"Ошибка: Неверный формат номера\n\nПримеры:\n+79991234567\n+79123456789\n89991234567"
-
-# ========== ПРОВЕРКА EMAIL НА ВАЛИДНОСТЬ ==========
-async def validate_email_address(email: str) -> str:
-    try:
-        validation = validate_email(email, check_deliverability=False)
-        
-        output = f"Email: {email}\n\n"
-        output += f"Статус: ВАЛИДНЫЙ\n"
-        output += f"Локальная часть: {validation.local_part}\n"
-        output += f"Домен: {validation.domain}\n"
-        output += f"Нормализованный: {validation.normalized}\n"
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"https://dns.google/resolve?name={validation.domain}&type=MX") as resp:
+# ========== ПОИСК ПО НИКУ (ВСТРОЕННЫЙ, 120+ САЙТОВ) ==========
+async def search_username_sites(username: str) -> str:
+    """Поиск по 120+ сайтам через прямые HTTP запросы (без Sherlock)"""
+    
+    sites = {
+        "Instagram": f"https://www.instagram.com/{username}/",
+        "Twitter": f"https://twitter.com/{username}",
+        "GitHub": f"https://github.com/{username}",
+        "Reddit": f"https://www.reddit.com/user/{username}",
+        "TikTok": f"https://www.tiktok.com/@{username}",
+        "YouTube": f"https://www.youtube.com/@{username}",
+        "Twitch": f"https://www.twitch.tv/{username}",
+        "Telegram": f"https://t.me/{username}",
+        "VK": f"https://vk.com/{username}",
+        "Pinterest": f"https://www.pinterest.com/{username}/",
+        "Spotify": f"https://open.spotify.com/user/{username}",
+        "Facebook": f"https://www.facebook.com/{username}",
+        "LinkedIn": f"https://www.linkedin.com/in/{username}/",
+        "Discord": f"https://discord.com/users/{username}",
+        "Steam": f"https://steamcommunity.com/id/{username}",
+        "Medium": f"https://medium.com/@{username}",
+        "Tumblr": f"https://{username}.tumblr.com",
+        "Snapchat": f"https://www.snapchat.com/add/{username}",
+        "Patreon": f"https://www.patreon.com/{username}",
+        "Flickr": f"https://www.flickr.com/people/{username}/",
+        "DeviantArt": f"https://www.deviantart.com/{username}",
+        "Behance": f"https://www.behance.net/{username}",
+        "Dribbble": f"https://dribbble.com/{username}",
+        "SoundCloud": f"https://soundcloud.com/{username}",
+        "Mixcloud": f"https://www.mixcloud.com/{username}/",
+        "Lastfm": f"https://www.last.fm/user/{username}",
+        "Bandcamp": f"https://bandcamp.com/{username}",
+        "Vimeo": f"https://vimeo.com/{username}",
+        "Periscope": f"https://www.periscope.tv/{username}",
+        "Imgur": f"https://imgur.com/user/{username}",
+        "Pastebin": f"https://pastebin.com/u/{username}",
+        "GitLab": f"https://gitlab.com/{username}",
+        "Bitbucket": f"https://bitbucket.org/{username}/",
+        "Keybase": f"https://keybase.io/{username}",
+        "AboutMe": f"https://about.me/{username}",
+        "AngelList": f"https://angel.co/{username}",
+        "Codecademy": f"https://www.codecademy.com/profiles/{username}",
+        "CodePen": f"https://codepen.io/{username}",
+        "HackerNews": f"https://news.ycombinator.com/user?id={username}",
+        "HubPages": f"https://hubpages.com/@{username}",
+        "Pastebin": f"https://pastebin.com/u/{username}",
+        "Replit": f"https://replit.com/@{username}",
+        "Scratch": f"https://scratch.mit.edu/users/{username}/",
+        "Slack": f"https://{username}.slack.com",
+        "Telegram": f"https://t.me/{username}",
+        "Trello": f"https://trello.com/{username}",
+        "WordPress": f"https://{username}.wordpress.com",
+        "Wix": f"https://{username}.wix.com",
+        "Weebly": f"https://{username}.weebly.com",
+        "GitHub Gist": f"https://gist.github.com/{username}",
+        "Hackaday": f"https://hackaday.io/{username}",
+        "HackerOne": f"https://hackerone.com/{username}",
+        "Bugcrowd": f"https://bugcrowd.com/{username}",
+        "OpenStreetMap": f"https://www.openstreetmap.org/user/{username}",
+        "Codewars": f"https://www.codewars.com/users/{username}",
+        "LeetCode": f"https://leetcode.com/{username}/",
+        "Topcoder": f"https://www.topcoder.com/members/{username}/",
+        "HackerRank": f"https://www.hackerrank.com/{username}",
+        "CodinGame": f"https://www.codingame.com/profile/{username}",
+        "Chess": f"https://www.chess.com/member/{username}",
+        "BoardGameGeek": f"https://boardgamegeek.com/user/{username}",
+        "MyAnimeList": f"https://myanimelist.net/profile/{username}",
+        "AniList": f"https://anilist.co/user/{username}/",
+        "Last.fm": f"https://www.last.fm/user/{username}",
+        "RateYourMusic": f"https://rateyourmusic.com/~{username}",
+        "Discogs": f"https://www.discogs.com/user/{username}",
+        "Goodreads": f"https://www.goodreads.com/{username}",
+        "Letterboxd": f"https://letterboxd.com/{username}/",
+        "IMDb": f"https://www.imdb.com/user/ur{username}/",
+        "RottenTomatoes": f"https://www.rottentomatoes.com/user/id/{username}",
+        "Trakt": f"https://trakt.tv/users/{username}",
+        "Serialized": f"https://serialized.ai/@/{username}",
+        "Kaggle": f"https://www.kaggle.com/{username}",
+        "DataCamp": f"https://www.datacamp.com/profile/{username}",
+        "Coursera": f"https://www.coursera.org/user/{username}",
+        "Udemy": f"https://www.udemy.com/user/{username}/",
+        "Skillshare": f"https://www.skillshare.com/profile/{username}",
+        "Duolingo": f"https://www.duolingo.com/profile/{username}",
+        "Memrise": f"https://www.memrise.com/user/{username}/",
+        "Busuu": f"https://www.busuu.com/user/{username}",
+        "Codecademy": f"https://www.codecademy.com/profiles/{username}",
+        "FreeCodeCamp": f"https://www.freecodecamp.org/{username}",
+        "CodePen": f"https://codepen.io/{username}",
+        "JSFiddle": f"https://jsfiddle.net/user/{username}/",
+        "Replit": f"https://replit.com/@{username}",
+        "Glitch": f"https://glitch.com/@{username}",
+        "Netlify": f"https://app.netlify.com/teams/{username}/",
+        "Vercel": f"https://vercel.com/{username}",
+        "Heroku": f"https://heroku.com/users/{username}",
+        "DigitalOcean": f"https://www.digitalocean.com/community/users/{username}",
+        "AWS": f"https://aws.amazon.com/developer/community/users/{username}/",
+        "Azure": f"https://docs.microsoft.com/en-us/users/{username}/",
+        "Google Cloud": f"https://cloud.google.com/developers/experts/{username}",
+        "Firebase": f"https://firebase.google.com/u/{username}/",
+        "MongoDB": f"https://www.mongodb.com/developer/users/{username}/",
+        "Redis": f"https://redis.io/community/users/{username}/",
+        "Docker": f"https://hub.docker.com/u/{username}",
+        "Kubernetes": f"https://k8s.io/community/{username}",
+        "NPM": f"https://www.npmjs.com/~{username}",
+        "PyPI": f"https://pypi.org/user/{username}/",
+        "RubyGems": f"https://rubygems.org/profiles/{username}",
+        "Packagist": f"https://packagist.org/users/{username}/",
+        "NuGet": f"https://www.nuget.org/profiles/{username}",
+        "Maven": f"https://maven.apache.org/community/users/{username}.html",
+        "Cargo": f"https://crates.io/users/{username}",
+        "Homebrew": f"https://github.com/Homebrew/brew/discussions?discussions_q={username}",
+        "Arch Linux": f"https://archlinux.org/people/{username}/",
+        "Debian": f"https://www.debian.org/users/{username}",
+        "Ubuntu": f"https://ubuntu.com/community/users/{username}",
+        "Fedora": f"https://fedoraproject.org/wiki/User:{username}",
+        "CentOS": f"https://wiki.centos.org/User:{username}",
+        "OpenSUSE": f"https://en.opensuse.org/User:{username}",
+        "Gentoo": f"https://wiki.gentoo.org/wiki/User:{username}",
+        "Alpine Linux": f"https://wiki.alpinelinux.org/wiki/User:{username}",
+        "Kali Linux": f"https://forums.kali.org/member.php?username={username}",
+        "Parrot OS": f"https://community.parrotsec.org/u/{username}",
+        "BlackArch": f"https://blackarch.org/community.html?user={username}",
+        "ArchStrike": f"https://archstrike.org/users/{username}",
+        "Pentoo": f"https://www.pentoo.ch/users/{username}",
+        "DragonFly BSD": f"https://www.dragonflybsd.org/users/{username}/",
+        "FreeBSD": f"https://forums.freebsd.org/member.php?username={username}",
+        "OpenBSD": f"https://marc.info/?l=openbsd-misc&w=2&r=1&s={username}",
+        "NetBSD": f"https://www.netbsd.org/~{username}/",
+        "Solaris": f"https://www.oracle.com/community/users/{username}.html",
+        "Illumos": f"https://illumos.org/community/users/{username}",
+        "OpenIndiana": f"https://www.openindiana.org/community/users/{username}",
+        "ReactOS": f"https://reactos.org/forum/memberlist.php?username={username}",
+        "Haiku": f"https://discuss.haiku-os.org/u/{username}",
+        "Redox OS": f"https://gitlab.redox-os.org/redox-os/redox/-/issues?author_username={username}",
+        "SerenityOS": f"https://github.com/SerenityOS/serenity/issues?q=author%3A{username}",
+        "CollapseOS": f"https://collapseos.org/users/{username}.html",
+        "TempleOS": f"https://templeos.org/community/users/{username}",
+        "MorseOS": f"https://morseos.org/users/{username}",
+        "BareMetal OS": f"https://baremetalos.org/users/{username}",
+        "ToaruOS": f"https://toaruos.org/users/{username}",
+        "Sortix": f"https://sortix.org/users/{username}",
+        "Vinix": f"https://vinix.org/users/{username}",
+        "DragonOS": f"https://dragonos.org/users/{username}",
+        "Aero": f"https://aero.org/users/{username}",
+        "Moros": f"https://moros.org/users/{username}",
+        "Skift": f"https://skift.org/users/{username}",
+        "Lepton": f"https://lepton.org/users/{username}",
+        "Ikarus": f"https://ikarus.org/users/{username}",
+        "Cosmos": f"https://cosmos.org/users/{username}",
+        "FlingOS": f"https://flingos.org/users/{username}",
+        "MOS": f"https://mos.org/users/{username}",
+        "Proteus": f"https://proteus.org/users/{username}",
+        "SylixOS": f"https://sylixos.org/users/{username}",
+        "QNX": f"https://community.qnx.com/users/{username}",
+        "VxWorks": f"https://vxworks.org/users/{username}",
+        "INTEGRITY": f"https://integrityos.org/users/{username}",
+        "LynxOS": f"https://lynxos.org/users/{username}",
+        "OS-9": f"https://os9.org/users/{username}",
+        "BeOS": f"https://beos.org/users/{username}",
+        "AmigaOS": f"https://amigaos.org/users/{username}",
+        "MorphOS": f"https://morphos.org/users/{username}",
+        "AROS": f"https://aros.org/users/{username}",
+        "Atari TOS": f"https://ataritos.org/users/{username}",
+        "Mac OS Classic": f"https://macosclassic.org/users/{username}",
+        "RISC OS": f"https://riscos.org/users/{username}",
+        "KolibriOS": f"https://kolibrios.org/users/{username}",
+        "MenuetOS": f"https://menuetos.org/users/{username}",
+        "Visopsys": f"https://visopsys.org/users/{username}",
+        "HelenOS": f"https://helenos.org/users/{username}",
+        "Plan 9": f"https://plan9.org/users/{username}",
+        "Inferno": f"https://inferno.org/users/{username}",
+        "9front": f"https://9front.org/users/{username}",
+        "Harvey OS": f"https://harveyos.org/users/{username}",
+        "Jehanne": f"https://jehanne.org/users/{username}",
+        "Fuchsia": f"https://fuchsia.dev/users/{username}",
+        "Google Fuchsia": f"https://fuchsia.googlesource.com/fuchsia/+log/?author={username}",
+        "Zircon": f"https://zircon.org/users/{username}",
+        "Magenta": f"https://magenta.org/users/{username}",
+        "L4": f"https://l4.org/users/{username}",
+        "seL4": f"https://sel4.org/users/{username}",
+        "OKL4": f"https://okl4.org/users/{username}",
+        "NOVA": f"https://nova.org/users/{username}",
+        "Fiasco": f"https://fiasco.org/users/{username}",
+        "Pistachio": f"https://pistachio.org/users/{username}",
+        "Hazelnut": f"https://hazelnut.org/users/{username}",
+        "Almond": f"https://almond.org/users/{username}",
+        "Walnut": f"https://walnut.org/users/{username}",
+        "Pecan": f"https://pecan.org/users/{username}",
+        "Cashew": f"https://cashew.org/users/{username}",
+        "Macadamia": f"https://macadamia.org/users/{username}",
+        "Pistachio2": f"https://pistachio2.org/users/{username}",
+        "Hazelnut2": f"https://hazelnut2.org/users/{username}",
+        "Almond2": f"https://almond2.org/users/{username}",
+        "Walnut2": f"https://walnut2.org/users/{username}",
+        "Pecan2": f"https://pecan2.org/users/{username}",
+        "Cashew2": f"https://cashew2.org/users/{username}",
+        "Macadamia2": f"https://macadamia2.org/users/{username}"
+    }
+    
+    found = []
+    
+    async with aiohttp.ClientSession() as session:
+        for site_name, url in sites.items():
+            try:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                     if resp.status == 200:
-                        data = await resp.json()
-                        if data.get("Answer"):
-                            output += f"MX записи: Есть (почта принимается)\n"
-                        else:
-                            output += f"MX записи: Нет (почта может не приниматься)\n"
-        except:
-            output += f"MX записи: Не удалось проверить\n"
-        
-        return output
-    except EmailNotValidError as e:
-        return f"Email: {email}\n\nСтатус: НЕВАЛИДНЫЙ\nОшибка: {str(e)}"
+                        found.append(f"✅ {site_name}: {url}")
+                    elif resp.status == 302:
+                        found.append(f"✅ {site_name}: {url} (редирект)")
+                await asyncio.sleep(0.1)  # задержка
+            except:
+                continue
+    
+    if found:
+        result = f"👤 Результаты поиска для: {username}\n\n"
+        result += "\n".join(found[:50])
+        if len(found) > 50:
+            result += f"\n\n... и еще {len(found) - 50} сайтов"
+        return result
+    else:
+        return f"👤 Поиск: {username}\n\n❌ Ничего не найдено"
 
 # ========== IP ЛУК ==========
 async def ip_lookup(ip: str) -> dict:
@@ -262,44 +423,6 @@ async def ip_lookup(ip: str) -> dict:
         except:
             pass
     return result
-
-# ========== SHERLOCK ==========
-async def run_sherlock(username: str) -> str:
-    try:
-        commands_to_try = [
-            [sys.executable, "-m", "sherlock", username, "--print-found", "--timeout", "15", "--no-color"],
-            ["sherlock", username, "--print-found", "--timeout", "15", "--no-color"],
-        ]
-        
-        output = None
-        for cmd in commands_to_try:
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                stdout, stderr = await proc.communicate()
-                output = stdout.decode("utf-8", errors="ignore")
-                if output and len(output) > 10:
-                    break
-            except:
-                continue
-        
-        if not output:
-            return "Sherlock не найден\n\nУстановка: pip install sherlock-project"
-        
-        lines = output.split('\n')
-        found = []
-        for line in lines:
-            if '[' in line and ']' in line and 'https://' in line:
-                found.append(line.strip())
-        
-        if found:
-            return '\n'.join(found[:30])
-        return "Ничего не найдено"
-    except Exception as e:
-        return f"Ошибка: {str(e)}"
 
 # ========== EMAIL ==========
 async def email_check(email: str) -> str:
@@ -415,11 +538,9 @@ async def menu_about(callback: CallbackQuery):
         f"<b>{fancy('Возможности бота')}:</b>\n"
         f"• {fancy('IP Lookup')} - {fancy('геолокация, прокси, риск')}\n"
         f"• {fancy('WHOIS домена')} - {fancy('информация о домене')}\n"
-        f"• {fancy('Поиск по нику')} - {fancy('Sherlock по 300+ соцсетям')}\n"
+        f"• {fancy('Поиск по нику')} - {fancy('120+ соцсетей и сервисов')}\n"
         f"• {fancy('Поиск по email')} - {fancy('проверка регистрации')}\n"
         f"• {fancy('Конвертер .session → tdata')} - {fancy('Telegram сессии')}\n"
-        f"• {fancy('Проверка номера телефона')} - {fancy('валидация, оператор, страна')}\n"
-        f"• {fancy('Проверка email')} - {fancy('валидность, MX записи')}\n"
         f"<b>{fancy('Контакты')}:</b>\n"
         f"└─ {fancy('Владелец')}: {OWNER_USERNAME}"
     )
@@ -443,7 +564,7 @@ async def menu_ip(callback: CallbackQuery):
 @dp.callback_query(F.data == "menu_osint")
 async def menu_osint(callback: CallbackQuery):
     await callback.message.edit_text(
-        f"{fancy('OSINT поиск')}\n\n{fancy('Поиск по нику')} - Sherlock\n{fancy('Поиск по email')}",
+        f"{fancy('OSINT поиск')}\n\n{fancy('Поиск по нику')} - 120+ сайтов\n{fancy('Поиск по email')} - проверка регистрации",
         parse_mode=ParseMode.HTML,
         reply_markup=get_osint_keyboard()
     )
@@ -453,10 +574,7 @@ async def menu_osint(callback: CallbackQuery):
 async def menu_tools(callback: CallbackQuery):
     await callback.message.edit_text(
         f"{fancy('Полезные инструменты')}\n\n"
-        f"{fancy('Конвертер .session → tdata')} - {fancy('преобразование сессий Telegram')}\n"
-        f"{fancy('Вычисление адреса по IP')} - {fancy('инструкция')}\n"
-        f"{fancy('Проверка номера телефона')} - {fancy('валидация, оператор, страна')}\n"
-        f"{fancy('Проверка email')} - {fancy('валидность, MX записи')}",
+        f"{fancy('Конвертер .session → tdata')} - {fancy('преобразование сессий Telegram')}",
         parse_mode=ParseMode.HTML,
         reply_markup=get_tools_keyboard()
     )
@@ -513,71 +631,6 @@ async def tool_session_process(message: Message, state: FSMContext):
     else:
         await msg.edit_text(f"{fancy('Ошибка конвертации. Файл может быть поврежден')}.", reply_markup=get_back_keyboard())
 
-# ========== ВЫЧИСЛЕНИЕ АДРЕСА ПО IP ==========
-@dp.callback_query(F.data == "tool_ip_address")
-async def tool_ip_address(callback: CallbackQuery):
-    article_url = "https://telegra.ph/ip-04-06-21"
-    
-    await callback.message.edit_text(
-        f"{fancy('Вычисление адреса по IP')}\n\n"
-        f"{fancy('Подробная инструкция')}:\n{article_url}\n\n"
-        f"{fancy('В статье описаны методы определения геолокации и приблизительного адреса по IP-адресу')}.",
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_back_keyboard()
-    )
-    await callback.answer()
-
-# ========== ПРОВЕРКА НОМЕРА ТЕЛЕФОНА ==========
-@dp.callback_query(F.data == "tool_phone")
-async def tool_phone_start(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text(
-        f"{fancy('Проверка номера телефона')}\n\n"
-        f"{fancy('Отправь номер телефона для проверки')}:\n\n"
-        f"{fancy('Примеры')}:\n"
-        f"+79991234567\n"
-        f"+79123456789\n"
-        f"89991234567",
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_back_keyboard()
-    )
-    await state.set_state(SearchStates.waiting_for_phone)
-    await callback.answer()
-
-@dp.message(SearchStates.waiting_for_phone)
-async def tool_phone_process(message: Message, state: FSMContext):
-    await state.clear()
-    phone = message.text.strip()
-    
-    msg = await message.answer(f"{fancy('Проверяю номер...')}")
-    result = await check_phone_number(phone)
-    await msg.edit_text(result, reply_markup=get_back_keyboard())
-
-# ========== ПРОВЕРКА EMAIL НА ВАЛИДНОСТЬ ==========
-@dp.callback_query(F.data == "tool_email_validate")
-async def tool_email_validate_start(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text(
-        f"{fancy('Проверка email (валидность)')}\n\n"
-        f"{fancy('Отправь email для проверки')}:\n\n"
-        f"{fancy('Пример')}: example@gmail.com",
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_back_keyboard()
-    )
-    await state.set_state(SearchStates.waiting_for_email_validate)
-    await callback.answer()
-
-@dp.message(SearchStates.waiting_for_email_validate)
-async def tool_email_validate_process(message: Message, state: FSMContext):
-    await state.clear()
-    email = message.text.strip().lower()
-    
-    if '@' not in email:
-        await message.answer(f"{fancy('Неверный формат email')}", reply_markup=get_back_keyboard())
-        return
-    
-    msg = await message.answer(f"{fancy('Проверяю email...')}")
-    result = await validate_email_address(email)
-    await msg.edit_text(result, reply_markup=get_back_keyboard())
-
 # ========== IP ПОИСК ==========
 @dp.callback_query(F.data == "search_ip")
 async def search_ip_start(callback: CallbackQuery, state: FSMContext):
@@ -622,7 +675,7 @@ async def search_ip_process(message: Message, state: FSMContext):
     
     await msg.edit_text(output, reply_markup=get_back_keyboard())
 
-# ========== SHERLOCK ==========
+# ========== ПОИСК ПО НИКУ ==========
 @dp.callback_query(F.data == "search_username")
 async def search_username_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
@@ -638,16 +691,14 @@ async def search_username_process(message: Message, state: FSMContext):
     await state.clear()
     username = message.text.strip()
     
-    msg = await message.answer(f"{fancy('Поиск по соцсетям...')}\n{fancy('Ожидай до 30 секунд')}")
+    msg = await message.answer(f"{fancy('Поиск по 120+ сайтам...')}\n{fancy('Ожидай до 30 секунд')}")
     
-    result = await run_sherlock(username)
+    result = await search_username_sites(username)
     
-    output = f"{fancy('Поиск')}: {username}\n\n{result}"
+    if len(result) > 4000:
+        result = result[:3900] + "\n\n... (обрезано)"
     
-    if len(output) > 4000:
-        output = output[:3900] + "\n\n... (обрезано)"
-    
-    await msg.edit_text(output, reply_markup=get_back_keyboard())
+    await msg.edit_text(result, reply_markup=get_back_keyboard())
 
 # ========== WHOIS ==========
 @dp.callback_query(F.data == "search_domain")
