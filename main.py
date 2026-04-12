@@ -14,7 +14,7 @@ def install_packages():
         "python-dotenv>=1.0.0",
         "qrcode>=7.4.0",
         "Pillow>=9.0.0",
-        "fragment-api-py>=1.0.0"
+        "fragment-api-lib>=1.0.0"
     ]
     
     print("=" * 60)
@@ -34,9 +34,8 @@ def install_packages():
         print(f"📦 Проверяю {package_name}...")
         
         try:
-            # Пробуем импортировать
-            if package_name == "fragment-api-py":
-                __import__("FragmentAPI")
+            if package_name == "fragment-api-lib":
+                __import__("fragment_api_lib")
             else:
                 __import__(package_name)
             print(f"✅ {package_name} уже установлен")
@@ -47,48 +46,28 @@ def install_packages():
                 print(f"✅ {package_name} установлен")
             except Exception as e:
                 print(f"❌ ОШИБКА установки {package_name}: {e}")
-                print(f"❌ Бот не может работать без {package_name}")
-                sys.exit(1)
     
     print("=" * 60)
     print("✅ ВСЕ ЗАВИСИМОСТИ УСТАНОВЛЕНЫ")
     print("=" * 60)
 
 def check_fragment_api():
-    """Проверка Fragment API с автоматической установкой"""
+    """Проверка Fragment API"""
     
     print("=" * 60)
     print("🔍 ПРОВЕРКА FRAGMENT API")
     print("=" * 60)
     
     try:
-        # Пробуем импортировать Fragment API
-        from FragmentAPI import AsyncFragmentAPI
+        from fragment_api_lib import FragmentClient
         print("✅ Fragment API найден")
         return True
     except ImportError as e:
         print(f"⚠️ Fragment API не найден: {e}")
-        print("📥 Пытаюсь установить fragment-api-py...")
-        
-        try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "fragment-api-py"])
-            print("✅ fragment-api-py установлен")
-            
-            # Проверяем еще раз
-            try:
-                from FragmentAPI import AsyncFragmentAPI
-                print("✅ Fragment API успешно загружен")
-                return True
-            except ImportError:
-                print("❌ Fragment API не загрузился после установки")
-                return False
-                
-        except Exception as e:
-            print(f"❌ ОШИБКА установки fragment-api-py: {e}")
-            return False
+        return False
 
 def check_env_variables():
-    """Проверка переменных окружения"""
+    """Проверка переменных окружения - ТОЛЬКО TON_SEED"""
     
     print("=" * 60)
     print("🔍 ПРОВЕРКА ПЕРЕМЕННЫХ .env")
@@ -96,6 +75,103 @@ def check_env_variables():
     
     from dotenv import load_dotenv
     load_dotenv()
+    
+    # Проверяем только BOT_TOKEN и TON_SEED
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    TON_SEED = os.getenv("TON_SEED")
+    
+    if not BOT_TOKEN:
+        print("❌ BOT_TOKEN не задан!")
+        return False
+    
+    if not TON_SEED:
+        print("❌ TON_SEED не задан! (Сид фраза кошелька)")
+        return False
+    
+    print("✅ BOT_TOKEN задан")
+    print(f"✅ TON_SEED задан ({len(TON_SEED.split())} слов)")
+    
+    print("✅ Все переменные окружения заданы")
+    return True
+
+def init_fragment_client():
+    """Инициализация Fragment клиента"""
+    
+    print("=" * 60)
+    print("🔧 ИНИЦИАЛИЗАЦИЯ FRAGMENT КЛИЕНТА")
+    print("=" * 60)
+    
+    try:
+        from fragment_api_lib import FragmentClient
+        
+        TON_SEED = os.getenv("TON_SEED")
+        
+        fragment_client = FragmentClient(seed=TON_SEED)
+        
+        print("✅ Fragment клиент успешно инициализирован")
+        return fragment_client
+        
+    except Exception as e:
+        print(f"❌ ОШИБКА инициализации Fragment клиента: {e}")
+        return None
+
+# ═══════════════════════════════════════════════════════════════
+#  ПРОВЕРКИ ПРИ ЗАПУСКЕ
+# ═══════════════════════════════════════════════════════════════
+
+def pre_start_checks():
+    """Все проверки перед запуском бота"""
+    
+    print("\n" + "🔥" * 30)
+    print("     ЗАПУСК ПРОВЕРКИ БОТА")
+    print("🔥" * 30 + "\n")
+    
+    # 1. Устанавливаем зависимости
+    install_packages()
+    
+    # 2. Проверяем Fragment API
+    if not check_fragment_api():
+        print("\n" + "❌" * 30)
+        print("  FRAGMENT API НЕ НАЙДЕН!")
+        print("  БОТ НЕ МОЖЕТ РАБОТАТЬ БЕЗ FRAGMENT API")
+        print("❌" * 30 + "\n")
+        sys.exit(1)
+    
+    # 3. Проверяем переменные окружения (только BOT_TOKEN и TON_SEED)
+    if not check_env_variables():
+        print("\n" + "❌" * 30)
+        print("  ОТСУТСТВУЮТ ПЕРЕМЕННЫЕ .env!")
+        print("  Нужны: BOT_TOKEN и TON_SEED")
+        print("❌" * 30 + "\n")
+        sys.exit(1)
+    
+    print("\n" + "✅" * 30)
+    print("     ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ УСПЕШНО")
+    print("✅" * 30 + "\n")
+
+# Запускаем проверки
+pre_start_checks()
+
+# Импортируем остальное
+import sqlite3
+import uuid
+from datetime import datetime
+from typing import Optional
+import aiohttp
+
+from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.filters import CommandStart, Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import (
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+)
+from dotenv import load_dotenv
+
+load_dotenv()
     
     required_vars = {
         "BOT_TOKEN": "Токен бота",
