@@ -17,8 +17,7 @@ def install_packages():
         "aiohttp>=3.8.0",
         "python-dotenv>=1.0.0",
         "qrcode>=7.4.0",
-        "Pillow>=9.0.0",
-        "fragment-api-lib>=1.0.0"
+        "Pillow>=9.0.0"
     ]
     
     print("=" * 50)
@@ -26,12 +25,9 @@ def install_packages():
     print("=" * 50)
     
     for package in required_packages:
-        package_name = package.split(">=")[0].replace("-", "_")
+        package_name = package.split(">=")[0]
         try:
-            if package_name == "fragment_api_lib":
-                __import__("fragment_api_lib")
-            else:
-                __import__(package_name)
+            __import__(package_name)
             print(f"✅ {package_name} уже установлен")
         except ImportError:
             print(f"📦 Устанавливаю {package}...")
@@ -101,20 +97,54 @@ PREMIUM_PACKAGES = [
     {"months": 12, "price_ton": 20.07, "price_rub": 0},
 ]
 
-# Fragment API
+# ═══════════════════════════════════════════════════════════════
+#  Fragment API
+# ═══════════════════════════════════════════════════════════════
+
 fragment_client = None
 FRAGMENT_AVAILABLE = False
 
-try:
-    from fragment_api_lib import FragmentClient
-    if TON_SEED:
-        fragment_client = FragmentClient(seed=TON_SEED)
+def init_fragment_client():
+    global fragment_client, FRAGMENT_AVAILABLE
+    
+    TON_SEED = os.getenv("TON_SEED")
+    
+    if not TON_SEED:
+        print("⚠️ TON_SEED не задан в .env файле")
+        return False
+    
+    try:
+        # Пробуем разные варианты импорта
+        try:
+            from fragment_api_lib import FragmentAPIClient
+            print("✅ FragmentAPIClient импортирован")
+        except ImportError:
+            try:
+                from fragment_api_lib.client import FragmentAPIClient
+                print("✅ FragmentAPIClient импортирован (из client)")
+            except ImportError:
+                try:
+                    from fragment_api_lib import FragmentClient as FragmentAPIClient
+                    print("✅ FragmentAPIClient импортирован (как FragmentClient)")
+                except ImportError as e:
+                    print(f"❌ Не удалось импортировать Fragment API: {e}")
+                    return False
+        
+        # Инициализируем клиент
+        fragment_client = FragmentAPIClient()
+        print("✅ Fragment клиент создан")
+        
         FRAGMENT_AVAILABLE = True
-        print("✅ Fragment API инициализирован")
-    else:
-        print("⚠️ TON_SEED не задан")
-except ImportError:
-    print("⚠️ Fragment API не установлен")
+        print("✅ Fragment API готов к работе!")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Ошибка инициализации Fragment API: {e}")
+        FRAGMENT_AVAILABLE = False
+        return False
+
+# Запускаем инициализацию
+init_fragment_client()
 
 # ═══════════════════════════════════════════════════════════════
 #  Парсер курсов
@@ -374,38 +404,62 @@ async def check_crypto_payment(invoice_id: int) -> str:
     return "unknown"
 
 # ═══════════════════════════════════════════════════════════════
-#  Fragment API
+#  Fragment API функции отправки
 # ═══════════════════════════════════════════════════════════════
 
 async def send_stars_via_fragment(username: str, amount: int) -> dict:
     if not FRAGMENT_AVAILABLE or not fragment_client:
-        raise Exception("Fragment API не настроен")
+        raise Exception("Fragment API не настроен. Проверьте TON_SEED в .env файле")
+    
     if amount < 50:
-        raise Exception(f"Минимальное количество звезд - 50")
+        raise Exception("Минимальное количество звезд - 50")
+    
     try:
         clean_username = username.lstrip("@")
-        result = await fragment_client.buy_stars_without_kyc(
+        
+        # Выполняем синхронный вызов в отдельном потоке
+        result = await asyncio.to_thread(
+            fragment_client.buy_stars_without_kyc,
             username=clean_username,
             amount=amount,
             seed=TON_SEED
         )
-        return {"success": True, "transaction_id": result.get("transaction_id", f"tx_{uuid.uuid4().hex[:10]}")}
+        
+        transaction_id = result.get("transaction_id", result.get("tx_id", f"tx_{uuid.uuid4().hex[:10]}"))
+        
+        print(f"✅ Отправлено {amount} Stars пользователю @{clean_username}, TX: {transaction_id}")
+        
+        return {"success": True, "transaction_id": transaction_id}
+        
     except Exception as e:
-        raise Exception(f"Ошибка: {str(e)}")
+        error_msg = str(e)
+        print(f"❌ Ошибка отправки Stars: {error_msg}")
+        raise Exception(f"Ошибка Fragment API: {error_msg}")
 
 async def send_premium_via_fragment(username: str, months: int) -> dict:
     if not FRAGMENT_AVAILABLE or not fragment_client:
-        raise Exception("Fragment API не настроен")
+        raise Exception("Fragment API не настроен. Проверьте TON_SEED в .env файле")
+    
     try:
         clean_username = username.lstrip("@")
-        result = await fragment_client.buy_premium(
+        
+        result = await asyncio.to_thread(
+            fragment_client.buy_premium,
             username=clean_username,
             months=months,
             seed=TON_SEED
         )
-        return {"success": True, "transaction_id": result.get("transaction_id", f"premium_{uuid.uuid4().hex[:10]}")}
+        
+        transaction_id = result.get("transaction_id", result.get("tx_id", f"premium_{uuid.uuid4().hex[:10]}"))
+        
+        print(f"✅ Активирован Premium на {months} мес. для @{clean_username}, TX: {transaction_id}")
+        
+        return {"success": True, "transaction_id": transaction_id}
+        
     except Exception as e:
-        raise Exception(f"Ошибка: {str(e)}")
+        error_msg = str(e)
+        print(f"❌ Ошибка активации Premium: {error_msg}")
+        raise Exception(f"Ошибка Fragment API: {error_msg}")
 
 # ═══════════════════════════════════════════════════════════════
 #  FSM Состояния
@@ -595,7 +649,7 @@ async def check_subscription_callback(cb: CallbackQuery):
     await cb.answer()
 
 # ═══════════════════════════════════════════════════════════════
-#  Обработчики
+#  Обработчики команд
 # ═══════════════════════════════════════════════════════════════
 
 @dp.message(CommandStart())
@@ -1983,7 +2037,7 @@ async def back_to_admin(cb: CallbackQuery):
         return
     
     stats = db_stats()
-    fragment_status = "✅ Активен" if fragment_client else "❌ Не настроен"
+    fragment_status = "✅ Активен" if FRAGMENT_AVAILABLE else "❌ Не настроен"
     
     text = (f"🔧 <b>Панель администратора</b>\n\n"
             f"👥 Пользователей: {stats['users']}\n"
@@ -2008,7 +2062,7 @@ async def admin_panel(msg: Message):
         return
     
     stats = db_stats()
-    fragment_status = "✅ Активен" if fragment_client else "❌ Не настроен"
+    fragment_status = "✅ Активен" if FRAGMENT_AVAILABLE else "❌ Не настроен"
     
     text = (f"🔧 <b>Панель администратора</b>\n\n"
             f"👥 Пользователей: {stats['users']}\n"
@@ -2150,10 +2204,10 @@ async def main():
     await update_prices()
     asyncio.create_task(price_updater_loop())
     
-    if fragment_client:
-        logging.info("Бот запущен! Fragment Api активен")
+    if FRAGMENT_AVAILABLE:
+        logging.info("✅ Бот запущен! Fragment API активен")
     else:
-        logging.warning("Бот запущен без Fragment Api")
+        logging.warning("⚠️ Бот запущен без Fragment API (проверьте TON_SEED в .env)")
     
     await dp.start_polling(bot)
 
