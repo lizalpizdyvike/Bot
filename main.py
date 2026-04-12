@@ -3,7 +3,11 @@ import logging
 import subprocess
 import sys
 import os
-import time
+import sqlite3
+import uuid
+from datetime import datetime
+from typing import Optional
+import aiohttp
 
 def install_packages():
     """Автоматическая установка необходимых библиотек"""
@@ -17,242 +21,32 @@ def install_packages():
         "fragment-api-lib>=1.0.0"
     ]
     
-    print("=" * 60)
-    print("🔧 НАЧАЛО УСТАНОВКИ ЗАВИСИМОСТЕЙ")
-    print("=" * 60)
+    print("=" * 50)
+    print("🔧 ПРОВЕРКА И УСТАНОВКА ЗАВИСИМОСТЕЙ")
+    print("=" * 50)
     
-    # Обновляем pip
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
-        print("✅ pip обновлен")
-    except:
-        print("⚠️ Не удалось обновить pip")
-    
-    # Устанавливаем пакеты
     for package in required_packages:
-        package_name = package.split(">=")[0]
-        print(f"📦 Проверяю {package_name}...")
-        
+        package_name = package.split(">=")[0].replace("-", "_")
         try:
-            if package_name == "fragment-api-lib":
+            if package_name == "fragment_api_lib":
                 __import__("fragment_api_lib")
             else:
                 __import__(package_name)
             print(f"✅ {package_name} уже установлен")
         except ImportError:
-            print(f"📥 Устанавливаю {package}...")
+            print(f"📦 Устанавливаю {package}...")
             try:
                 subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-                print(f"✅ {package_name} установлен")
+                print(f"✅ {package} установлен")
             except Exception as e:
-                print(f"❌ ОШИБКА установки {package_name}: {e}")
+                print(f"❌ Ошибка установки {package}: {e}")
     
-    print("=" * 60)
-    print("✅ ВСЕ ЗАВИСИМОСТИ УСТАНОВЛЕНЫ")
-    print("=" * 60)
+    print("=" * 50)
+    print("✅ ПРОВЕРКА ЗАВЕРШЕНА")
+    print("=" * 50)
 
-def check_fragment_api():
-    """Проверка Fragment API"""
-    
-    print("=" * 60)
-    print("🔍 ПРОВЕРКА FRAGMENT API")
-    print("=" * 60)
-    
-    try:
-        from fragment_api_lib import FragmentClient
-        print("✅ Fragment API найден")
-        return True
-    except ImportError as e:
-        print(f"⚠️ Fragment API не найден: {e}")
-        return False
-
-def check_env_variables():
-    """Проверка переменных окружения - ТОЛЬКО BOT_TOKEN и TON_SEED"""
-    
-    print("=" * 60)
-    print("🔍 ПРОВЕРКА ПЕРЕМЕННЫХ .env")
-    print("=" * 60)
-    
-    from dotenv import load_dotenv
-    load_dotenv()
-    
-    BOT_TOKEN = os.getenv("BOT_TOKEN")
-    TON_SEED = os.getenv("TON_SEED")
-    
-    if not BOT_TOKEN:
-        print("❌ BOT_TOKEN не задан!")
-        return False
-    
-    if not TON_SEED:
-        print("❌ TON_SEED не задан!")
-        return False
-    
-    print("✅ BOT_TOKEN задан")
-    print(f"✅ TON_SEED задан")
-    
-    return True
-
-def init_fragment_client():
-    """Инициализация Fragment клиента"""
-    
-    print("=" * 60)
-    print("🔧 ИНИЦИАЛИЗАЦИЯ FRAGMENT КЛИЕНТА")
-    print("=" * 60)
-    
-    try:
-        from fragment_api_lib import FragmentClient
-        
-        TON_SEED = os.getenv("TON_SEED")
-        
-        fragment_client = FragmentClient(seed=TON_SEED)
-        
-        print("✅ Fragment клиент успешно инициализирован")
-        return fragment_client
-        
-    except Exception as e:
-        print(f"❌ ОШИБКА инициализации Fragment клиента: {e}")
-        return None
-
-# Устанавливаем зависимости
+# Запускаем установку
 install_packages()
-
-# Проверяем Fragment API (НЕ ОСТАНАВЛИВАЕМ БОТА)
-if not check_fragment_api():
-    print("⚠️ Fragment API не найден, бот будет работать без него")
-
-# Проверяем переменные
-if not check_env_variables():
-    print("❌ Ошибка: BOT_TOKEN или TON_SEED не заданы!")
-    sys.exit(1)
-
-# Инициализируем Fragment клиент
-fragment_client = init_fragment_client()
-
-# Импортируем остальное
-import sqlite3
-import uuid
-from datetime import datetime
-from typing import Optional
-import aiohttp
-
-from aiogram import Bot, Dispatcher, F
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart, Command
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import (
-    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-)
-from dotenv import load_dotenv
-
-load_dotenv()
-    
-    required_vars = {
-        "BOT_TOKEN": "Токен бота",
-        "TON_COOKIES": "Cookies от fragment.com",
-        "TON_HASH": "Hash значение",
-        "TON_SEED": "Сид фраза кошелька (24 слова)",
-        "TON_API_KEY": "API ключ от tonconsole.com"
-    }
-    
-    missing_vars = []
-    
-    for var, description in required_vars.items():
-        value = os.getenv(var)
-        if not value:
-            missing_vars.append(f"   ❌ {var} - {descrip
-            if var == "TON_SEED":
-                print(f"   ✅ {var} = [СКРЫТО] ({len(value.split())} слов)")
-            elif var == "TON_COOKIES":
-                print(f"   ✅ {var} = [СКРЫТО] ({len(value)} символов)")
-            else:
-                print(f"   ✅ {var} = {value[:10]}...")
-    
-    if missing_vars:
-        print("\n❌ ОТСУТСТВУЮТ ОБЯЗАТЕЛЬНЫЕ ПЕРЕМЕННЫЕ:")
-        for mv in missing_vars:
-            print(mv)
-        print("\n📝 Добавьте их в файл .env")
-        return False
-    
-    print("✅ Все переменные окружения заданы")
-    return True
-
-def init_fragment_client():
-    """Инициализация Fragment клиента"""
-    
-    print("=" * 60)
-    print("🔧 ИНИЦИАЛИЗАЦИЯ FRAGMENT КЛИЕНТА")
-    print("=" * 60)
-    
-    try:
-        from FragmentAPI import AsyncFragmentAPI
-        
-        TON_COOKIES = os.getenv("TON_COOKIES")
-        TON_HASH = os.getenv("TON_HASH")
-        TON_SEED = os.getenv("TON_SEED")
-        TON_API_KEY = os.getenv("TON_API_KEY")
-        
-        fragment_client = AsyncFragmentAPI(
-            cookies=TON_COOKIES,
-            hash_value=TON_HASH,
-            wallet_mnemonic=TON_SEED,
-            wallet_api_key=TON_API_KEY,
-            wallet_version="V4R2"
-        )
-        
-        print("✅ Fragment клиент успешно инициализирован")
-        return fragment_client
-        
-    except Exception as e:
-        print(f"❌ ОШИБКА инициализации Fragment клиента: {e}")
-        return None
-
-# ═══════════════════════════════════════════════════════════════
-#  ПРОВЕРКИ ПРИ ЗАПУСКЕ
-# ═══════════════════════════════════════════════════════════════
-
-def pre_start_checks():
-    """Все проверки перед запуском бота"""
-    
-    print("\n" + "🔥" * 30)
-    print("     ЗАПУСК ПРОВЕРКИ БОТА")
-    print("🔥" * 30 + "\n")
-    
-    # 1. Устанавливаем зависимости
-    install_packages()
-    
-    # 2. Проверяем Fragment API
-    if not check_fragment_api():
-        print("\n" + "❌" * 30)
-        print("  FRAGMENT API НЕ НАЙДЕН!")
-        print("  БОТ НЕ МОЖЕТ РАБОТАТЬ БЕЗ FRAGMENT API")
-        print("❌" * 30 + "\n")
-        sys.exit(1)
-    
-    # 3. Проверяем переменные окружения
-    if not check_env_variables():
-        print("\n" + "❌" * 30)
-        print("  ОТСУТСТВУЮТ ПЕРЕМЕННЫЕ .env!")
-        print("  БОТ НЕ МОЖЕТ РАБОТАТЬ БЕЗ НИХ")
-        print("❌" * 30 + "\n")
-        sys.exit(1)
-    
-    print("\n" + "✅" * 30)
-    print("     ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ УСПЕШНО")
-    print("✅" * 30 + "\n")
-
-# Запускаем проверки ПЕРЕД импортом остальных модулей
-pre_start_checks()
-
-# Теперь импортируем остальное
-import sqlite3
-import uuid
-from datetime import datetime
-from typing import Optional
-import aiohttp
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
@@ -278,19 +72,23 @@ MARKUP_PERCENT = int(os.getenv("MARKUP_PERCENT", 20))
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "support")
 CRYPTOBOT_TOKEN = os.getenv("CRYPTOBOT_TOKEN")
 TON_SEED = os.getenv("TON_SEED")
-DB_PATH = "stars_bot.db"
 
-# Реквизиты карты из .env
+# Директория для данных
+DATA_DIR = os.getenv('DATA_DIR', '/app/data')
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_PATH = os.path.join(DATA_DIR, "stars_bot.db")
+
+# Реквизиты карты
 CARD_NUMBER = os.getenv("CARD_NUMBER", "")
 CARD_BANK = os.getenv("CARD_BANK", "")
 CARD_HOLDER = os.getenv("CARD_HOLDER", "")
 CARD_PHONE = os.getenv("CARD_PHONE", "")
 
 # Канал для подписки
-REQUIRED_CHANNEL_ID = "-1003304197671"  # ID канала @HollywoodStarsChannel
+REQUIRED_CHANNEL_ID = "-1003304197671"
 REQUIRED_CHANNEL_LINK = "https://t.me/HollywoodStarsChannel"
 
-# Динамические курсы
+# Курсы
 TON_RUB = 105.45
 STARS_TON_PRICE = 0.010749
 STAR_SELL_PRICE = 0.0
@@ -298,38 +96,25 @@ LAST_UPDATE_TIME = None
 
 # Premium пакеты
 PREMIUM_PACKAGES = [
-    {"months": 3,  "price_ton": 8.30,  "price_rub": 0},
-    {"months": 6,  "price_ton": 11.07, "price_rub": 0},
+    {"months": 3, "price_ton": 8.30, "price_rub": 0},
+    {"months": 6, "price_ton": 11.07, "price_rub": 0},
     {"months": 12, "price_ton": 20.07, "price_rub": 0},
 ]
 
+# Fragment API
 fragment_client = None
 FRAGMENT_AVAILABLE = False
 
 try:
-    from fragment_api_lib.client import FragmentAPIClient as FragmentClient
-    FRAGMENT_AVAILABLE = True
-except ImportError:
-    try:
-        from fragment_api_lib import FragmentClient
-        FRAGMENT_AVAILABLE = True
-    except ImportError:
-        FRAGMENT_AVAILABLE = False
-
-def init_fragment_client():
-    global fragment_client
-    try:
-        if not TON_SEED:
-            return False
-        if not FRAGMENT_AVAILABLE:
-            return False
+    from fragment_api_lib import FragmentClient
+    if TON_SEED:
         fragment_client = FragmentClient(seed=TON_SEED)
-        logging.info("Fragment клиент инициализирован")
-        return True
-    except Exception as e:
-        logging.error(f"Ошибка Fragment: {e}")
-        fragment_client = None
-        return False
+        FRAGMENT_AVAILABLE = True
+        print("✅ Fragment API инициализирован")
+    else:
+        print("⚠️ TON_SEED не задан")
+except ImportError:
+    print("⚠️ Fragment API не установлен")
 
 # ═══════════════════════════════════════════════════════════════
 #  Парсер курсов
@@ -763,7 +548,6 @@ def payment_action_keyboard(payment_id: int, payment_type: str):
 # ═══════════════════════════════════════════════════════════════
 
 async def check_subscription(user_id: int) -> bool:
-    """Проверяет, подписан ли пользователь на канал"""
     try:
         chat_member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL_ID, user_id=user_id)
         return chat_member.status in ["member", "administrator", "creator"]
@@ -773,9 +557,7 @@ async def check_subscription(user_id: int) -> bool:
 
 @dp.callback_query(F.data == "check_subscription")
 async def check_subscription_callback(cb: CallbackQuery):
-    """Обработчик кнопки проверки подписки"""
     user_id = cb.from_user.id
-    
     is_subscribed = await check_subscription(user_id)
     
     if is_subscribed:
@@ -804,14 +586,12 @@ async def check_subscription_callback(cb: CallbackQuery):
                 f"🛍 <b>Хороших покупок!</b>",
                 reply_markup=main_menu_keyboard()
             )
-        
         try:
             await cb.message.delete()
         except:
             pass
     else:
         await cb.answer("❌ Вы еще не подписаны на канал! Подпишитесь и нажмите «Проверить подписку»", show_alert=True)
-    
     await cb.answer()
 
 # ═══════════════════════════════════════════════════════════════
@@ -820,7 +600,6 @@ async def check_subscription_callback(cb: CallbackQuery):
 
 @dp.message(CommandStart())
 async def cmd_start(msg: Message):
-    # Сначала проверяем подписку
     is_subscribed = await check_subscription(msg.from_user.id)
     
     if not is_subscribed:
@@ -833,7 +612,6 @@ async def cmd_start(msg: Message):
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")]
         ])
-        
         await msg.answer(text, reply_markup=kb, disable_web_page_preview=True)
         return
     
@@ -865,7 +643,6 @@ async def cmd_start(msg: Message):
 
 @dp.callback_query(F.data == "back_to_main")
 async def back_to_main(cb: CallbackQuery, state: FSMContext):
-    # Проверяем подписку
     is_subscribed = await check_subscription(cb.from_user.id)
     
     if not is_subscribed:
@@ -878,7 +655,6 @@ async def back_to_main(cb: CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")]
         ])
-        
         try:
             await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
         except:
@@ -920,7 +696,6 @@ async def back_to_main(cb: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "menu_profile")
 async def menu_profile(cb: CallbackQuery):
-    # Проверяем подписку
     is_subscribed = await check_subscription(cb.from_user.id)
     
     if not is_subscribed:
@@ -933,7 +708,6 @@ async def menu_profile(cb: CallbackQuery):
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")]
         ])
-        
         try:
             await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
         except:
@@ -966,7 +740,6 @@ async def menu_profile(cb: CallbackQuery):
 
 @dp.callback_query(F.data == "menu_buy_stars")
 async def menu_buy_stars(cb: CallbackQuery, state: FSMContext):
-    # Проверяем подписку
     is_subscribed = await check_subscription(cb.from_user.id)
     
     if not is_subscribed:
@@ -979,7 +752,6 @@ async def menu_buy_stars(cb: CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")]
         ])
-        
         try:
             await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
         except:
@@ -988,7 +760,6 @@ async def menu_buy_stars(cb: CallbackQuery, state: FSMContext):
         return
     
     await state.set_state(BuyStars.choose_recipient)
-    
     text = (f"⭐ <b>Покупка Stars</b>\n\n"
             f"📊 1 Star = {STAR_SELL_PRICE:.2f}₽\n"
             f"🕐 Курс обновлен: {LAST_UPDATE_TIME}\n\n"
@@ -1003,7 +774,6 @@ async def menu_buy_stars(cb: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "menu_buy_premium")
 async def menu_buy_premium(cb: CallbackQuery):
-    # Проверяем подписку
     is_subscribed = await check_subscription(cb.from_user.id)
     
     if not is_subscribed:
@@ -1016,7 +786,6 @@ async def menu_buy_premium(cb: CallbackQuery):
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")]
         ])
-        
         try:
             await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
         except:
@@ -1038,7 +807,6 @@ async def menu_buy_premium(cb: CallbackQuery):
 
 @dp.callback_query(F.data == "menu_orders")
 async def menu_orders(cb: CallbackQuery):
-    # Проверяем подписку
     is_subscribed = await check_subscription(cb.from_user.id)
     
     if not is_subscribed:
@@ -1051,7 +819,6 @@ async def menu_orders(cb: CallbackQuery):
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")]
         ])
-        
         try:
             await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
         except:
@@ -1095,7 +862,6 @@ async def menu_orders(cb: CallbackQuery):
 
 @dp.callback_query(F.data == "menu_help")
 async def menu_help(cb: CallbackQuery):
-    # Проверяем подписку
     is_subscribed = await check_subscription(cb.from_user.id)
     
     if not is_subscribed:
@@ -1108,7 +874,6 @@ async def menu_help(cb: CallbackQuery):
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")]
         ])
-        
         try:
             await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
         except:
@@ -1141,7 +906,6 @@ async def menu_help(cb: CallbackQuery):
 
 @dp.callback_query(F.data == "topup_menu")
 async def topup_menu(cb: CallbackQuery):
-    # Проверяем подписку
     is_subscribed = await check_subscription(cb.from_user.id)
     
     if not is_subscribed:
@@ -1154,7 +918,6 @@ async def topup_menu(cb: CallbackQuery):
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")]
         ])
-        
         try:
             await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
         except:
@@ -1176,7 +939,6 @@ async def topup_menu(cb: CallbackQuery):
 
 @dp.callback_query(F.data == "rec_self")
 async def rec_self(cb: CallbackQuery, state: FSMContext):
-    # Проверяем подписку
     is_subscribed = await check_subscription(cb.from_user.id)
     
     if not is_subscribed:
@@ -1189,7 +951,6 @@ async def rec_self(cb: CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")]
         ])
-        
         try:
             await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
         except:
@@ -1210,7 +971,6 @@ async def rec_self(cb: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "rec_friend")
 async def rec_friend(cb: CallbackQuery, state: FSMContext):
-    # Проверяем подписку
     is_subscribed = await check_subscription(cb.from_user.id)
     
     if not is_subscribed:
@@ -1223,7 +983,6 @@ async def rec_friend(cb: CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")]
         ])
-        
         try:
             await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
         except:
@@ -1243,7 +1002,6 @@ async def rec_friend(cb: CallbackQuery, state: FSMContext):
 
 @dp.message(BuyStars.enter_username)
 async def friend_username(msg: Message, state: FSMContext):
-    # Проверяем подписку
     is_subscribed = await check_subscription(msg.from_user.id)
     
     if not is_subscribed:
@@ -1256,7 +1014,6 @@ async def friend_username(msg: Message, state: FSMContext):
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")]
         ])
-        
         await msg.answer(text, reply_markup=kb, disable_web_page_preview=True)
         return
     
@@ -1271,7 +1028,6 @@ async def friend_username(msg: Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("stars_"))
 async def choose_stars_package(cb: CallbackQuery, state: FSMContext):
-    # Проверяем подписку
     is_subscribed = await check_subscription(cb.from_user.id)
     
     if not is_subscribed:
@@ -1284,7 +1040,6 @@ async def choose_stars_package(cb: CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")]
         ])
-        
         try:
             await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
         except:
@@ -1330,7 +1085,6 @@ async def choose_stars_package(cb: CallbackQuery, state: FSMContext):
 
 @dp.message(BuyStars.choose_package)
 async def custom_stars(msg: Message, state: FSMContext):
-    # Проверяем подписку
     is_subscribed = await check_subscription(msg.from_user.id)
     
     if not is_subscribed:
@@ -1343,7 +1097,6 @@ async def custom_stars(msg: Message, state: FSMContext):
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")]
         ])
-        
         await msg.answer(text, reply_markup=kb, disable_web_page_preview=True)
         return
     
@@ -1377,7 +1130,6 @@ async def custom_stars(msg: Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("premium_"))
 async def choose_premium(cb: CallbackQuery, state: FSMContext):
-    # Проверяем подписку
     is_subscribed = await check_subscription(cb.from_user.id)
     
     if not is_subscribed:
@@ -1390,7 +1142,6 @@ async def choose_premium(cb: CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")]
         ])
-        
         try:
             await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
         except:
@@ -1462,7 +1213,6 @@ async def deliver_order(order_id: int, user_id: int):
 
 @dp.callback_query(F.data.startswith("pay_balance_"))
 async def pay_balance(cb: CallbackQuery):
-    # Проверяем подписку
     is_subscribed = await check_subscription(cb.from_user.id)
     
     if not is_subscribed:
@@ -1475,7 +1225,6 @@ async def pay_balance(cb: CallbackQuery):
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")]
         ])
-        
         try:
             await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
         except:
@@ -1523,12 +1272,11 @@ async def pay_balance(cb: CallbackQuery):
     await cb.answer()
 
 # ═══════════════════════════════════════════════════════════════
-#  Оплата картой (УНИВЕРСАЛЬНАЯ СИСТЕМА)
+#  Оплата картой
 # ═══════════════════════════════════════════════════════════════
 
 @dp.callback_query(F.data.startswith("pay_card_"))
 async def pay_card(cb: CallbackQuery, state: FSMContext):
-    # Проверяем подписку
     is_subscribed = await check_subscription(cb.from_user.id)
     
     if not is_subscribed:
@@ -1541,7 +1289,6 @@ async def pay_card(cb: CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")]
         ])
-        
         try:
             await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
         except:
@@ -1560,11 +1307,9 @@ async def pay_card(cb: CallbackQuery, state: FSMContext):
         await cb.answer("❌ Оплата картой временно недоступна", show_alert=True)
         return
     
-    # Сохраняем ID заказа в состояние
     await state.update_data(card_order_id=order_id)
     await state.set_state(CardPaymentState.waiting_for_screenshot)
     
-    # Определяем тип платежа
     if order["type"] == "topup":
         payment_type_text = "пополнение баланса"
     elif order["type"] == "stars":
@@ -1582,10 +1327,6 @@ async def pay_card(cb: CallbackQuery, state: FSMContext):
             f"├ Держатель: {CARD_HOLDER}\n"
             f"└ Телефон: {CARD_PHONE}\n\n"
             f"📸 <b>После оплаты отправьте скриншот чека</b>\n\n"
-            f"❗ На скриншоте должны быть видны:\n"
-            f"• Сумма платежа\n"
-            f"• Дата и время\n"
-            f"• Последние 4 цифры карты\n\n"
             f"🔙 Для отмены нажмите «Назад»")
     
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")]])
@@ -1596,10 +1337,8 @@ async def pay_card(cb: CallbackQuery, state: FSMContext):
         await cb.message.answer(text, reply_markup=kb)
     await cb.answer()
 
-# Универсальный обработчик скриншотов
 @dp.message(CardPaymentState.waiting_for_screenshot)
 async def handle_card_screenshot(msg: Message, state: FSMContext):
-    # Проверяем подписку
     is_subscribed = await check_subscription(msg.from_user.id)
     
     if not is_subscribed:
@@ -1612,19 +1351,18 @@ async def handle_card_screenshot(msg: Message, state: FSMContext):
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")]
         ])
-        
         await msg.answer(text, reply_markup=kb, disable_web_page_preview=True)
         return
     
     if not msg.photo:
-        await msg.answer("❌ Пожалуйста, отправьте скриншот чека (фото)")
+        await msg.answer("❌ Пожалуйста, отправьте скриншот чека")
         return
     
     data = await state.get_data()
     order_id = data.get("card_order_id")
     
     if not order_id:
-        await msg.answer("❌ Ошибка: данные не найдены. Пожалуйста, начните оплату заново.")
+        await msg.answer("❌ Ошибка: начните оплату заново")
         await state.clear()
         return
     
@@ -1634,7 +1372,6 @@ async def handle_card_screenshot(msg: Message, state: FSMContext):
         await state.clear()
         return
     
-    # Определяем тип платежа
     if order["type"] == "topup":
         payment_type = "topup"
         payment_type_text = "Пополнение баланса"
@@ -1647,7 +1384,6 @@ async def handle_card_screenshot(msg: Message, state: FSMContext):
     
     photo_file_id = msg.photo[-1].file_id
     
-    # Создаём запись о платеже по карте
     payment_id = db_create_card_payment(
         user_id=msg.from_user.id,
         order_id=order_id,
@@ -1656,7 +1392,6 @@ async def handle_card_screenshot(msg: Message, state: FSMContext):
         photo_file_id=photo_file_id
     )
     
-    # Обновляем статус заказа
     db_update_order(order_id, "pending", "card")
     
     await msg.answer(
@@ -1664,14 +1399,12 @@ async def handle_card_screenshot(msg: Message, state: FSMContext):
         f"📦 Заказ #{order_id}\n"
         f"💰 Сумма: {order['amount_rub']}₽\n"
         f"📝 {payment_type_text}\n\n"
-        f"⏳ Ожидайте подтверждения от администратора.\n\n"
-        f"Статус заказа можно отслеживать в разделе «Мои заказы»",
+        f"⏳ Ожидайте подтверждения администратора",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")]
         ])
     )
     
-    # Отправляем админам
     for admin_id in ADMIN_IDS:
         try:
             await bot.send_photo(
@@ -1683,9 +1416,7 @@ async def handle_card_screenshot(msg: Message, state: FSMContext):
                         f"📦 Заказ #{order_id}\n"
                         f"💰 Сумма: {order['amount_rub']}₽\n"
                         f"📝 {payment_type_text}\n"
-                        f"👤 Получатель: @{order['recipient']}\n"
-                        f"📅 Дата: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                        f"Используйте кнопки ниже для подтверждения:",
+                        f"👤 Получатель: @{order['recipient']}",
                 reply_markup=payment_action_keyboard(payment_id, payment_type)
             )
         except Exception as e:
@@ -1734,21 +1465,14 @@ async def approve_topup(cb: CallbackQuery):
     payment_id = int(cb.data.split("_")[2])
     payment = db_get_card_payment(payment_id)
     
-    if not payment:
-        await cb.answer("Платеж не найден", show_alert=True)
-        return
-    
-    if payment["status"] != "pending":
-        await cb.answer("Платеж уже обработан", show_alert=True)
+    if not payment or payment["status"] != "pending":
+        await cb.answer("Платеж не найден или уже обработан", show_alert=True)
         return
     
     await cb.answer("✅ Пополнение одобрено!")
     
-    # Обновляем статусы
     db_update_card_payment(payment_id, "approved")
     db_update_order(payment["order_id"], "completed", "card")
-    
-    # Пополняем баланс
     db_add_balance(payment["user_id"], payment["amount"])
     new_balance = db_get_balance(payment["user_id"])
     
@@ -1756,10 +1480,7 @@ async def approve_topup(cb: CallbackQuery):
         f"✅ <b>Пополнение баланса одобрено!</b>\n\n"
         f"👤 Пользователь: {payment['user_id']}\n"
         f"💰 Сумма: {payment['amount']}₽\n"
-        f"📊 Новый баланс: {new_balance}₽",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 К списку платежей", callback_data="admin_card_payments")]
-        ])
+        f"📊 Новый баланс: {new_balance}₽"
     )
     
     try:
@@ -1767,13 +1488,11 @@ async def approve_topup(cb: CallbackQuery):
     except:
         pass
     
-    # Уведомляем пользователя
     await bot.send_message(
         payment["user_id"],
         f"✅ <b>Баланс успешно пополнен!</b>\n\n"
         f"💰 Зачислено: {payment['amount']}₽\n"
-        f"📊 Новый баланс: {new_balance}₽\n\n"
-        f"🎉 Спасибо за доверие!",
+        f"📊 Новый баланс: {new_balance}₽",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")]
         ])
@@ -1788,48 +1507,29 @@ async def approve_purchase(cb: CallbackQuery):
     payment_id = int(cb.data.split("_")[2])
     payment = db_get_card_payment(payment_id)
     
-    if not payment:
-        await cb.answer("Платеж не найден", show_alert=True)
-        return
-    
-    if payment["status"] != "pending":
-        await cb.answer("Платеж уже обработан", show_alert=True)
+    if not payment or payment["status"] != "pending":
+        await cb.answer("Платеж не найден или уже обработан", show_alert=True)
         return
     
     await cb.answer("✅ Покупка одобрена!")
     
-    # Обновляем статусы
     db_update_card_payment(payment_id, "approved")
     db_update_order(payment["order_id"], "processing", "card")
     
-    await cb.message.answer(
-        f"✅ <b>Покупка одобрена!</b>\n\n"
-        f"📦 Заказ #{payment['order_id']}\n"
-        f"💰 Сумма: {payment['amount']}₽\n\n"
-        f"⏳ Начинаем отправку...",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 К списку платежей", callback_data="admin_card_payments")]
-        ])
-    )
+    await cb.message.answer(f"✅ <b>Покупка одобрена!</b>\n\n📦 Заказ #{payment['order_id']}\n⏳ Начинаем отправку...")
     
     try:
         await cb.message.delete()
     except:
         pass
     
-    # Отправляем товар
     try:
         await deliver_order(payment["order_id"], payment["user_id"])
     except Exception as e:
         db_update_order(payment["order_id"], "failed", "card")
         await bot.send_message(
             payment["user_id"],
-            f"❌ <b>Ошибка при обработке заказа #{payment['order_id']}</b>\n\n"
-            f"{str(e)}\n\n"
-            f"Обратитесь в поддержку: @{SUPPORT_USERNAME}",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")]
-            ])
+            f"❌ <b>Ошибка при обработке заказа #{payment['order_id']}</b>\n\n{str(e)}\n\nОбратитесь в поддержку: @{SUPPORT_USERNAME}"
         )
 
 @dp.callback_query(F.data.startswith("reject_payment_"))
@@ -1841,12 +1541,8 @@ async def reject_payment(cb: CallbackQuery):
     payment_id = int(cb.data.split("_")[2])
     payment = db_get_card_payment(payment_id)
     
-    if not payment:
-        await cb.answer("Платеж не найден", show_alert=True)
-        return
-    
-    if payment["status"] != "pending":
-        await cb.answer("Платеж уже обработан", show_alert=True)
+    if not payment or payment["status"] != "pending":
+        await cb.answer("Платеж не найден или уже обработан", show_alert=True)
         return
     
     await cb.answer("❌ Платеж отклонен!")
@@ -1854,42 +1550,25 @@ async def reject_payment(cb: CallbackQuery):
     db_update_card_payment(payment_id, "rejected")
     db_update_order(payment["order_id"], "failed", "card")
     
-    await cb.message.answer(
-        f"❌ <b>Платеж отклонен</b>\n\n"
-        f"📦 Заказ #{payment['order_id']}\n"
-        f"💰 Сумма: {payment['amount']}₽",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 К списку платежей", callback_data="admin_card_payments")]
-        ])
-    )
+    await cb.message.answer(f"❌ <b>Платеж отклонен</b>\n\n📦 Заказ #{payment['order_id']}\n💰 Сумма: {payment['amount']}₽")
     
     try:
         await cb.message.delete()
     except:
         pass
     
-    # Уведомляем пользователя
     type_text = "пополнение баланса" if payment["payment_type"] == "topup" else "покупка"
     await bot.send_message(
         payment["user_id"],
-        f"❌ <b>Ваш платеж отклонен</b>\n\n"
-        f"📝 Операция: {type_text}\n"
-        f"💰 Сумма: {payment['amount']}₽\n\n"
-        f"Причина: неверный скриншот или сумма не совпадает\n\n"
-        f"Пожалуйста, проверьте корректность оплаты и попробуйте снова.\n\n"
-        f"📞 Поддержка: @{SUPPORT_USERNAME}",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")]
-        ])
+        f"❌ <b>Ваш платеж отклонен</b>\n\n📝 Операция: {type_text}\n💰 Сумма: {payment['amount']}₽\n\nПричина: неверный скриншот\n\nПоддержка: @{SUPPORT_USERNAME}"
     )
 
 # ═══════════════════════════════════════════════════════════════
-#  Пополнение баланса через карту (вызов универсальной системы)
+#  Пополнение баланса
 # ═══════════════════════════════════════════════════════════════
 
 @dp.callback_query(F.data == "topup_card")
 async def topup_card(cb: CallbackQuery, state: FSMContext):
-    # Проверяем подписку
     is_subscribed = await check_subscription(cb.from_user.id)
     
     if not is_subscribed:
@@ -1902,7 +1581,6 @@ async def topup_card(cb: CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")]
         ])
-        
         try:
             await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
         except:
@@ -1924,7 +1602,6 @@ async def topup_card(cb: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "topup_crypto")
 async def topup_crypto(cb: CallbackQuery, state: FSMContext):
-    # Проверяем подписку
     is_subscribed = await check_subscription(cb.from_user.id)
     
     if not is_subscribed:
@@ -1937,7 +1614,6 @@ async def topup_crypto(cb: CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")]
         ])
-        
         try:
             await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
         except:
@@ -1959,7 +1635,6 @@ async def topup_crypto(cb: CallbackQuery, state: FSMContext):
 
 @dp.message(TopUpState.waiting_for_amount)
 async def topup_amount(msg: Message, state: FSMContext):
-    # Проверяем подписку
     is_subscribed = await check_subscription(msg.from_user.id)
     
     if not is_subscribed:
@@ -1972,7 +1647,6 @@ async def topup_amount(msg: Message, state: FSMContext):
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")]
         ])
-        
         await msg.answer(text, reply_markup=kb, disable_web_page_preview=True)
         return
     
@@ -1988,11 +1662,9 @@ async def topup_amount(msg: Message, state: FSMContext):
     method = data.get("topup_method", "crypto")
     
     if method == "card":
-        # Создаём заказ на пополнение
         username = msg.from_user.username or str(msg.from_user.id)
         order_id = db_create_order(msg.from_user.id, "topup", 0, amount, username)
         
-        # Передаём в обработчик карты
         await state.update_data(card_order_id=order_id)
         await state.set_state(CardPaymentState.waiting_for_screenshot)
         
@@ -2004,14 +1676,11 @@ async def topup_amount(msg: Message, state: FSMContext):
                 f"├ Банк: {CARD_BANK}\n"
                 f"├ Держатель: {CARD_HOLDER}\n"
                 f"└ Телефон: {CARD_PHONE}\n\n"
-                f"📸 <b>После оплаты отправьте скриншот чека</b>\n\n"
-                f"❗ На скриншоте должны быть видны сумма и дата платежа\n\n"
-                f"После отправки скриншота администратор проверит оплату и пополнит баланс.")
+                f"📸 <b>После оплаты отправьте скриншот чека</b>")
         
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="topup_menu")]])
         await msg.answer(text, reply_markup=kb)
     else:
-        # CryptoBot пополнение
         invoice = await create_crypto_invoice(amount)
         if not invoice:
             await msg.answer("❌ Ошибка создания счета")
@@ -2037,7 +1706,7 @@ async def topup_amount(msg: Message, state: FSMContext):
 async def check_topup(cb: CallbackQuery):
     parts = cb.data.split("_")
     if len(parts) != 3:
-        await cb.answer("❌ Ошибка формата запроса", show_alert=True)
+        await cb.answer("❌ Ошибка", show_alert=True)
         return
     
     invoice_id = int(parts[1])
@@ -2067,7 +1736,6 @@ async def check_topup(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("pay_crypto_"))
 async def pay_crypto(cb: CallbackQuery):
-    # Проверяем подписку
     is_subscribed = await check_subscription(cb.from_user.id)
     
     if not is_subscribed:
@@ -2080,7 +1748,6 @@ async def pay_crypto(cb: CallbackQuery):
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_subscription")]
         ])
-        
         try:
             await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
         except:
@@ -2128,12 +1795,8 @@ async def check_crypto_payment_handler(cb: CallbackQuery):
     order_id = int(cb.data.split("_")[2])
     order = db_get_order(order_id)
     
-    if not order:
-        await cb.answer("❌ Заказ не найден", show_alert=True)
-        return
-    
-    if not order["payment_id"]:
-        await cb.answer("Ошибка: нет счета", show_alert=True)
+    if not order or not order["payment_id"]:
+        await cb.answer("Ошибка", show_alert=True)
         return
     
     status = await check_crypto_payment(int(order["payment_id"]))
@@ -2152,13 +1815,13 @@ async def check_crypto_payment_handler(cb: CallbackQuery):
             await deliver_order(order_id, cb.from_user.id)
         except Exception as e:
             db_update_order(order_id, "failed", "cryptobot")
-            text = (f"❌ <b>Ошибка!</b>\n\n{str(e)}\n\nОбратитесь в поддержку: @{SUPPORT_USERNAME}")
+            text = f"❌ <b>Ошибка!</b>\n\n{str(e)}\n\nПоддержка: @{SUPPORT_USERNAME}"
             kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")]])
             await cb.message.edit_text(text, reply_markup=kb)
     elif status == "active":
         await cb.answer("⏳ Оплата еще не получена", show_alert=True)
     else:
-        await cb.answer("❌ Счет не оплачен или истек", show_alert=True)
+        await cb.answer("❌ Счет не оплачен", show_alert=True)
     await cb.answer()
 
 @dp.callback_query(F.data.startswith("cancel_"))
@@ -2483,7 +2146,6 @@ async def do_broadcast(msg: Message, state: FSMContext):
 async def main():
     logging.basicConfig(level=logging.INFO)
     
-    init_fragment_client()
     db_init()
     await update_prices()
     asyncio.create_task(price_updater_loop())
