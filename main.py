@@ -1,4 +1,6 @@
-import asyncio
+tion}")
+        else:
+            # Скрываем敏感 данныеimport asyncio
 import logging
 import subprocess
 import sys
@@ -67,7 +69,7 @@ def check_fragment_api():
         return False
 
 def check_env_variables():
-    """Проверка переменных окружения - ТОЛЬКО TON_SEED"""
+    """Проверка переменных окружения - ТОЛЬКО BOT_TOKEN и TON_SEED"""
     
     print("=" * 60)
     print("🔍 ПРОВЕРКА ПЕРЕМЕННЫХ .env")
@@ -76,7 +78,6 @@ def check_env_variables():
     from dotenv import load_dotenv
     load_dotenv()
     
-    # Проверяем только BOT_TOKEN и TON_SEED
     BOT_TOKEN = os.getenv("BOT_TOKEN")
     TON_SEED = os.getenv("TON_SEED")
     
@@ -85,13 +86,12 @@ def check_env_variables():
         return False
     
     if not TON_SEED:
-        print("❌ TON_SEED не задан! (Сид фраза кошелька)")
+        print("❌ TON_SEED не задан!")
         return False
     
     print("✅ BOT_TOKEN задан")
-    print(f"✅ TON_SEED задан ({len(TON_SEED.split())} слов)")
+    print(f"✅ TON_SEED задан")
     
-    print("✅ Все переменные окружения заданы")
     return True
 
 def init_fragment_client():
@@ -115,42 +115,20 @@ def init_fragment_client():
         print(f"❌ ОШИБКА инициализации Fragment клиента: {e}")
         return None
 
-# ═══════════════════════════════════════════════════════════════
-#  ПРОВЕРКИ ПРИ ЗАПУСКЕ
-# ═══════════════════════════════════════════════════════════════
+# Устанавливаем зависимости
+install_packages()
 
-def pre_start_checks():
-    """Все проверки перед запуском бота"""
-    
-    print("\n" + "🔥" * 30)
-    print("     ЗАПУСК ПРОВЕРКИ БОТА")
-    print("🔥" * 30 + "\n")
-    
-    # 1. Устанавливаем зависимости
-    install_packages()
-    
-    # 2. Проверяем Fragment API
-    if not check_fragment_api():
-        print("\n" + "❌" * 30)
-        print("  FRAGMENT API НЕ НАЙДЕН!")
-        print("  БОТ НЕ МОЖЕТ РАБОТАТЬ БЕЗ FRAGMENT API")
-        print("❌" * 30 + "\n")
-        sys.exit(1)
-    
-    # 3. Проверяем переменные окружения (только BOT_TOKEN и TON_SEED)
-    if not check_env_variables():
-        print("\n" + "❌" * 30)
-        print("  ОТСУТСТВУЮТ ПЕРЕМЕННЫЕ .env!")
-        print("  Нужны: BOT_TOKEN и TON_SEED")
-        print("❌" * 30 + "\n")
-        sys.exit(1)
-    
-    print("\n" + "✅" * 30)
-    print("     ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ УСПЕШНО")
-    print("✅" * 30 + "\n")
+# Проверяем Fragment API (НЕ ОСТАНАВЛИВАЕМ БОТА)
+if not check_fragment_api():
+    print("⚠️ Fragment API не найден, бот будет работать без него")
 
-# Запускаем проверки
-pre_start_checks()
+# Проверяем переменные
+if not check_env_variables():
+    print("❌ Ошибка: BOT_TOKEN или TON_SEED не заданы!")
+    sys.exit(1)
+
+# Инициализируем Fragment клиент
+fragment_client = init_fragment_client()
 
 # Импортируем остальное
 import sqlite3
@@ -186,9 +164,7 @@ load_dotenv()
     for var, description in required_vars.items():
         value = os.getenv(var)
         if not value:
-            missing_vars.append(f"   ❌ {var} - {description}")
-        else:
-            # Скрываем敏感 данные
+            missing_vars.append(f"   ❌ {var} - {descrip
             if var == "TON_SEED":
                 print(f"   ✅ {var} = [СКРЫТО] ({len(value.split())} слов)")
             elif var == "TON_COOKIES":
