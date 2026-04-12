@@ -9,6 +9,10 @@ from datetime import datetime
 from typing import Optional
 import aiohttp
 
+# ⚠️ СНАЧАЛА загружаем .env ДО ВСЕГО!
+from dotenv import load_dotenv
+load_dotenv()
+
 def install_packages():
     """Автоматическая установка необходимых библиотек"""
     
@@ -54,12 +58,9 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 )
-from dotenv import load_dotenv
-
-load_dotenv()
 
 # ═══════════════════════════════════════════════════════════════
-#  Конфиг
+#  Конфиг (читаем из .env после загрузки)
 # ═══════════════════════════════════════════════════════════════
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -68,6 +69,10 @@ MARKUP_PERCENT = int(os.getenv("MARKUP_PERCENT", 20))
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "support")
 CRYPTOBOT_TOKEN = os.getenv("CRYPTOBOT_TOKEN")
 TON_SEED = os.getenv("TON_SEED")
+
+# Выводим для проверки (НЕ ПИШИ ТАК В ПРОДЕ, ТОЛЬКО ДЛЯ ОТЛАДКИ!)
+print(f"🔍 BOT_TOKEN = {BOT_TOKEN[:10]}... (скрыто)")
+print(f"🔍 TON_SEED = {'ЗАДАН' if TON_SEED else 'НЕ ЗАДАН'}")
 
 # Директория для данных
 DATA_DIR = os.getenv('DATA_DIR', '/app/data')
@@ -107,14 +112,16 @@ FRAGMENT_AVAILABLE = False
 def init_fragment_client():
     global fragment_client, FRAGMENT_AVAILABLE
     
-    TON_SEED = os.getenv("TON_SEED")
+    # Еще раз проверяем TON_SEED
+    ton_seed = os.getenv("TON_SEED")
+    print(f"🔍 В init_fragment_client: TON_SEED = {'ЗАДАН' if ton_seed else 'НЕ ЗАДАН'}")
     
-    if not TON_SEED:
+    if not ton_seed:
         print("⚠️ TON_SEED не задан в .env файле")
         return False
     
     try:
-        # Пробуем разные варианты импорта
+        # Пробуем импортировать
         try:
             from fragment_api_lib import FragmentAPIClient
             print("✅ FragmentAPIClient импортирован")
@@ -122,15 +129,11 @@ def init_fragment_client():
             try:
                 from fragment_api_lib.client import FragmentAPIClient
                 print("✅ FragmentAPIClient импортирован (из client)")
-            except ImportError:
-                try:
-                    from fragment_api_lib import FragmentClient as FragmentAPIClient
-                    print("✅ FragmentAPIClient импортирован (как FragmentClient)")
-                except ImportError as e:
-                    print(f"❌ Не удалось импортировать Fragment API: {e}")
-                    return False
+            except ImportError as e:
+                print(f"❌ Не удалось импортировать Fragment API: {e}")
+                return False
         
-        # Инициализируем клиент
+        # Инициализируем
         fragment_client = FragmentAPIClient()
         print("✅ Fragment клиент создан")
         
@@ -145,7 +148,6 @@ def init_fragment_client():
 
 # Запускаем инициализацию
 init_fragment_client()
-
 # ═══════════════════════════════════════════════════════════════
 #  Парсер курсов
 # ═══════════════════════════════════════════════════════════════
