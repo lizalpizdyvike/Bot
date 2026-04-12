@@ -1,6 +1,4 @@
-tion}")
-        else:
-            # Скрываем敏感 данныеimport asyncio
+import asyncio
 import logging
 import subprocess
 import sys
