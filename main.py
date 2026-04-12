@@ -3,7 +3,73 @@ import logging
 import subprocess
 import sys
 import os
+def install_packages():
+    """Автоматическая установка необходимых библиотек"""
+    
+    required_packages = [
+        "aiogram>=3.0.0",
+        "aiohttp>=3.8.0",
+        "python-dotenv>=1.0.0",
+        "qrcode>=7.4.0",
+        "Pillow>=9.0.0",
+        "fragment-api-lib>=1.0.0"  # Fragment API для покупки Stars и Premium
+    ]
+    
+    # Установка пакетов
+    for package in required_packages:
+        try:
+            # Проверяем имя пакета без версии
+            package_name = package.split(">=")[0].replace("-", "_")
+            # Для fragment-api-lib нужно особое обращение
+            if package_name == "fragment_api_lib":
+                try:
+                    import fragment_api_lib
+                    print(f"✅ fragment-api-lib уже установлен")
+                    continue
+                except ImportError:
+                    pass
+            else:
+                try:
+                    __import__(package_name)
+                    print(f"✅ {package_name} уже установлен")
+                    continue
+                except ImportError:
+                    pass
+        except:
+            pass
+        
+        print(f"📦 Устанавливаю {package}...")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+            print(f"✅ {package} установлен")
+        except Exception as e:
+            print(f"❌ Ошибка установки {package}: {e}")
 
+def check_and_install_dependencies():
+    """Полная проверка и установка всех зависимостей"""
+    
+    print("=" * 50)
+    print("🔧 Проверка и установка зависимостей...")
+    print("=" * 50)
+    
+    # Обновляем pip
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
+        print("✅ pip обновлен")
+    except:
+        print("⚠️ Не удалось обновить pip")
+    
+    # Устанавливаем пакеты
+    install_packages()
+    
+    print("=" * 50)
+    print("✅ Проверка зависимостей завершена")
+    print("=" * 50)
+
+# Запускаем проверку при импорте
+if __name__ != "__main__":
+    check_and_install_dependencies()
+    
 import sqlite3
 import uuid
 from datetime import datetime
