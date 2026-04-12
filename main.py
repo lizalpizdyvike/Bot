@@ -12,7 +12,8 @@ def install_packages():
         "aiohttp>=3.8.0",
         "python-dotenv>=1.0.0",
         "qrcode>=7.4.0",
-        "Pillow>=9.0.0"
+        "Pillow>=9.0.0",
+        "fragment-api-lib>=1.0.0"  # Fragment API для покупки Stars и Premium
     ]
     
     # Fragment API (опционально, если не установится - бот всё равно запустится)
