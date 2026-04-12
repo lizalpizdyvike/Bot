@@ -8,12 +8,50 @@ def install_packages():
     """Автоматическая установка необходимых библиотек"""
     
     required_packages = [
-        "aiogram>=3.0.0",
-        "aiohttp>=3.8.0",
-        "python-dotenv>=1.0.0",
-        "qrcode>=7.4.0",
-        "Pillow>=9.0.0",
-        "fragment-api-lib>=1.0.0"  # Fragment API для покупки Stars и Premium
+        required_packages = [
+    "aiogram>=3.0.0",
+    "aiohttp>=3.8.0",
+    "python-dotenv>=1.0.0",
+    "qrcode>=7.4.0",
+    "Pillow>=9.0.0",
+    "fragment-api-lib>=1.0.0",
+    "cryptography>=41.0.0",
+    "python-telegram-bot>=20.0",
+    "sqlite3",
+    "asyncio",
+    "uvloop>=0.17.0",
+    "aiofiles>=23.0.0",
+    "python-multipart>=0.0.6",
+    "pytz>=2023.3",
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=4.9.0",
+    "psutil>=5.9.0",
+    "colorama>=0.4.6",
+    "tqdm>=4.65.0",
+    "python-dateutil>=2.8.2",
+    "email-validator>=2.0.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "redis>=5.0.0",
+    "cachetools>=5.3.0",
+    "tenacity>=8.2.0",
+    "loguru>=0.7.0",
+    "jinja2>=3.1.0",
+    "httpx>=0.24.0",
+    "websockets>=12.0",
+    "pyyaml>=6.0",
+    "toml>=0.10.2",
+    "click>=8.1.0",
+    "rich>=13.5.0",
+    "prometheus-client>=0.17.0",
+    "sentry-sdk>=1.32.0",
+    "newrelic>=9.0.0",
+    "datadog>=0.47.0",
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-instrumentation>=0.41b0"
+]
     ]
     
     # Fragment API (опционально, если не установится - бот всё равно запустится)
