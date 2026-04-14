@@ -7,11 +7,6 @@ import sqlite3
 import uuid
 from datetime import datetime
 from typing import Optional
-import aiohttp
-
-# ⚠️ СНАЧАЛА загружаем .env ДО ВСЕГО!
-from dotenv import load_dotenv
-load_dotenv()
 
 def install_packages():
     """Автоматическая установка необходимых библиотек"""
@@ -22,7 +17,7 @@ def install_packages():
         "python-dotenv>=1.0.1",
         "qrcode>=7.4.0",
         "Pillow>=9.0.0",
-        "fragment-api-lib>=1.0.0"  # ДОБАВИЛИ!
+        "fragment-api-lib>=1.0.0"
     ]
     
     print("=" * 50)
@@ -31,23 +26,39 @@ def install_packages():
     
     for package in required_packages:
         package_name = package.split(">=")[0]
-        try:
-            __import__(package_name)
-            print(f"✅ {package_name} уже установлен")
-        except ImportError:
-            print(f"📦 Устанавливаю {package}...")
+        # Для python-dotenv нужно проверять по-другому
+        if package_name == "python-dotenv":
             try:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-                print(f"✅ {package} установлен")
-            except Exception as e:
-                print(f"❌ Ошибка установки {package}: {e}")
+                import dotenv
+                print(f"✅ {package_name} уже установлен")
+                continue
+            except ImportError:
+                pass
+        else:
+            try:
+                __import__(package_name.replace("-", "_"))
+                print(f"✅ {package_name} уже установлен")
+                continue
+            except ImportError:
+                pass
+        
+        print(f"📦 Устанавливаю {package}...")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+            print(f"✅ {package} установлен")
+        except Exception as e:
+            print(f"❌ Ошибка установки {package}: {e}")
     
     print("=" * 50)
     print("✅ ПРОВЕРКА ЗАВЕРШЕНА")
     print("=" * 50)
 
-# Запускаем установку
+# Запускаем установку ПЕРЕД импортом dotenv
 install_packages()
+
+# Теперь можно импортировать dotenv
+from dotenv import load_dotenv
+load_dotenv()
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
