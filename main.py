@@ -19,7 +19,7 @@ def install_packages():
     required_packages = [
         "aiogram>=3.0.0",
         "aiohttp>=3.8.0",
-        "python-dotenv>=1.0.0",
+        "python-dotenv>=1.0.1",
         "qrcode>=7.4.0",
         "Pillow>=9.0.0",
         "fragment-api-lib>=1.0.0"  # ДОБАВИЛИ!
