@@ -26,7 +26,6 @@ def install_packages():
     
     for package in required_packages:
         package_name = package.split(">=")[0]
-        # Для python-dotenv нужно проверять по-другому
         if package_name == "python-dotenv":
             try:
                 import dotenv
@@ -56,7 +55,6 @@ def install_packages():
 # Запускаем установку ПЕРЕД импортом dotenv
 install_packages()
 
-# Теперь можно импортировать dotenv
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -70,9 +68,10 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 )
+import aiohttp
 
 # ═══════════════════════════════════════════════════════════════
-#  Конфиг (читаем из .env после загрузки)
+#  Конфиг
 # ═══════════════════════════════════════════════════════════════
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -82,32 +81,27 @@ SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "support")
 CRYPTOBOT_TOKEN = os.getenv("CRYPTOBOT_TOKEN")
 TON_SEED = os.getenv("TON_SEED")
 
-# Выводим для проверки (НЕ ПИШИ ТАК В ПРОДЕ, ТОЛЬКО ДЛЯ ОТЛАДКИ!)
-print(f"🔍 BOT_TOKEN = {BOT_TOKEN[:10]}... (скрыто)")
+print(f"🔍 BOT_TOKEN = {BOT_TOKEN[:10] if BOT_TOKEN else 'None'}...")
 print(f"🔍 TON_SEED = {'ЗАДАН' if TON_SEED else 'НЕ ЗАДАН'}")
+print(f"🔍 ADMIN_IDS = {ADMIN_IDS}")
 
-# Директория для данных
 DATA_DIR = os.getenv('DATA_DIR', '/app/data')
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "stars_bot.db")
 
-# Реквизиты карты
 CARD_NUMBER = os.getenv("CARD_NUMBER", "")
 CARD_BANK = os.getenv("CARD_BANK", "")
 CARD_HOLDER = os.getenv("CARD_HOLDER", "")
 CARD_PHONE = os.getenv("CARD_PHONE", "")
 
-# Канал для подписки
 REQUIRED_CHANNEL_ID = "-1003304197671"
 REQUIRED_CHANNEL_LINK = "https://t.me/HollywoodStarsChannel"
 
-# Курсы
 TON_RUB = 105.45
 STARS_TON_PRICE = 0.010749
 STAR_SELL_PRICE = 0.0
 LAST_UPDATE_TIME = None
 
-# Premium пакеты
 PREMIUM_PACKAGES = [
     {"months": 3, "price_ton": 8.30, "price_rub": 0},
     {"months": 6, "price_ton": 11.07, "price_rub": 0},
@@ -124,42 +118,29 @@ FRAGMENT_AVAILABLE = False
 def init_fragment_client():
     global fragment_client, FRAGMENT_AVAILABLE
     
-    # Еще раз проверяем TON_SEED
     ton_seed = os.getenv("TON_SEED")
     print(f"🔍 В init_fragment_client: TON_SEED = {'ЗАДАН' if ton_seed else 'НЕ ЗАДАН'}")
     
-    if not ton_seed:
+    if not ton_seed or ton_seed == "":
         print("⚠️ TON_SEED не задан в .env файле")
         return False
     
     try:
-        # Пробуем импортировать
-        try:
-            from fragment_api_lib import FragmentAPIClient
-            print("✅ FragmentAPIClient импортирован")
-        except ImportError:
-            try:
-                from fragment_api_lib.client import FragmentAPIClient
-                print("✅ FragmentAPIClient импортирован (из client)")
-            except ImportError as e:
-                print(f"❌ Не удалось импортировать Fragment API: {e}")
-                return False
-        
-        # Инициализируем
+        from fragment_api_lib import FragmentAPIClient
         fragment_client = FragmentAPIClient()
-        print("✅ Fragment клиент создан")
-        
         FRAGMENT_AVAILABLE = True
         print("✅ Fragment API готов к работе!")
         return True
-        
+    except ImportError as e:
+        print(f"❌ Ошибка импорта Fragment API: {e}")
+        print("⚠️ Работаем без Fragment API (только ручная выдача)")
+        return False
     except Exception as e:
         print(f"❌ Ошибка инициализации Fragment API: {e}")
-        FRAGMENT_AVAILABLE = False
         return False
 
-# Запускаем инициализацию
 init_fragment_client()
+
 # ═══════════════════════════════════════════════════════════════
 #  Парсер курсов
 # ═══════════════════════════════════════════════════════════════
@@ -418,20 +399,30 @@ async def check_crypto_payment(invoice_id: int) -> str:
     return "unknown"
 
 # ═══════════════════════════════════════════════════════════════
-#  Fragment API функции отправки
+#  Fragment API функции отправки (РАБОЧАЯ ВЕРСИЯ)
 # ═══════════════════════════════════════════════════════════════
 
 async def send_stars_via_fragment(username: str, amount: int) -> dict:
+    """
+    Отправка звезд через Fragment API
+    """
     if not FRAGMENT_AVAILABLE or not fragment_client:
-        raise Exception("Fragment API не настроен. Проверьте TON_SEED в .env файле")
+        raise Exception("❌ Fragment API не настроен. Заказ требует ручной обработки администратором.")
     
     if amount < 50:
-        raise Exception("Минимальное количество звезд - 50")
+        raise Exception("❌ Минимальное количество звезд для отправки - 50")
     
     try:
         clean_username = username.lstrip("@")
         
-        # Выполняем синхронный вызов в отдельном потоке
+        print(f"🚀 Отправка {amount} звезд пользователю @{clean_username}...")
+        
+        # Рассчитываем стоимость в TON
+        needed_ton = amount * STARS_TON_PRICE
+        print(f"📊 Стоимость: {needed_ton:.6f} TON")
+        
+        # Пытаемся отправить через Fragment API
+        # Используем синхронный вызов в отдельном потоке
         result = await asyncio.to_thread(
             fragment_client.buy_stars_without_kyc,
             username=clean_username,
@@ -441,21 +432,48 @@ async def send_stars_via_fragment(username: str, amount: int) -> dict:
         
         transaction_id = result.get("transaction_id", result.get("tx_id", f"tx_{uuid.uuid4().hex[:10]}"))
         
-        print(f"✅ Отправлено {amount} Stars пользователю @{clean_username}, TX: {transaction_id}")
+        print(f"✅ УСПЕХ! Отправлено {amount} звезд @{clean_username}")
+        print(f"🔗 TX ID: {transaction_id}")
         
-        return {"success": True, "transaction_id": transaction_id}
+        return {
+            "success": True, 
+            "transaction_id": transaction_id,
+            "amount": amount,
+            "username": clean_username
+        }
         
     except Exception as e:
         error_msg = str(e)
-        print(f"❌ Ошибка отправки Stars: {error_msg}")
-        raise Exception(f"Ошибка Fragment API: {error_msg}")
+        print(f"❌ Ошибка отправки звезд: {error_msg}")
+        
+        # Расшифровка ошибок для пользователя
+        if "Insufficient balance" in error_msg:
+            user_error = (f"❌ Недостаточно средств на кошельке бота!\n\n"
+                         f"Пожалуйста, используйте другой способ оплаты или обратитесь в поддержку.\n\n"
+                         f"📞 Поддержка: @{SUPPORT_USERNAME}")
+        elif "invalid" in error_msg.lower():
+            user_error = (f"❌ Неверный username получателя.\n\n"
+                         f"Убедитесь, что пользователь @{username} существует и может получать звезды.")
+        else:
+            user_error = f"❌ Ошибка Fragment API: {error_msg[:200]}\n\nПожалуйста, обратитесь в поддержку: @{SUPPORT_USERNAME}"
+        
+        raise Exception(user_error)
 
 async def send_premium_via_fragment(username: str, months: int) -> dict:
+    """
+    Отправка Premium через Fragment API
+    """
     if not FRAGMENT_AVAILABLE or not fragment_client:
-        raise Exception("Fragment API не настроен. Проверьте TON_SEED в .env файле")
+        raise Exception("❌ Fragment API не настроен. Заказ требует ручной обработки администратором.")
     
     try:
         clean_username = username.lstrip("@")
+        
+        print(f"🚀 Активация Premium на {months} мес. для @{clean_username}...")
+        
+        premium_prices = {3: 8.30, 6: 11.07, 12: 20.07}
+        needed_ton = premium_prices.get(months, 8.30)
+        print(f"📊 Стоимость: {needed_ton} TON")
         
         result = await asyncio.to_thread(
             fragment_client.buy_premium,
@@ -466,14 +484,112 @@ async def send_premium_via_fragment(username: str, months: int) -> dict:
         
         transaction_id = result.get("transaction_id", result.get("tx_id", f"premium_{uuid.uuid4().hex[:10]}"))
         
-        print(f"✅ Активирован Premium на {months} мес. для @{clean_username}, TX: {transaction_id}")
+        print(f"✅ Premium активирован для @{clean_username} на {months} мес.")
+        print(f"🔗 TX ID: {transaction_id}")
         
-        return {"success": True, "transaction_id": transaction_id}
+        return {
+            "success": True, 
+            "transaction_id": transaction_id,
+            "months": months,
+            "username": clean_username
+        }
         
     except Exception as e:
         error_msg = str(e)
         print(f"❌ Ошибка активации Premium: {error_msg}")
-        raise Exception(f"Ошибка Fragment API: {error_msg}")
+        
+        if "Insufficient balance" in error_msg:
+            user_error = (f"❌ Недостаточно средств на кошельке бота!\n\n"
+                         f"Обратитесь в поддержку: @{SUPPORT_USERNAME}")
+        else:
+            user_error = f"❌ Ошибка Fragment API: {error_msg[:200]}\n\nОбратитесь в поддержку: @{SUPPORT_USERNAME}"
+        
+        raise Exception(user_error)
+
+# ═══════════════════════════════════════════════════════════════
+#  Доставка товара (с повторными попытками)
+# ═══════════════════════════════════════════════════════════════
+
+async def deliver_order(order_id: int, user_id: int, retry_count: int = 0):
+    """
+    Доставка заказа с автоматическими повторными попытками
+    """
+    order = db_get_order(order_id)
+    if not order:
+        raise Exception(f"❌ Заказ {order_id} не найден")
+    
+    max_retries = 2
+    
+    for attempt in range(max_retries + 1):
+        try:
+            if order["type"] == "stars":
+                print(f"📦 Доставка заказа #{order_id}: {order['quantity']} звезд -> @{order['recipient']}")
+                
+                result = await send_stars_via_fragment(order["recipient"], order["quantity"])
+                
+                db_update_order(order_id, "completed", order["payment_method"], result["transaction_id"])
+                
+                await bot.send_message(
+                    user_id,
+                    f"✅ <b>Заказ #{order_id} выполнен!</b>\n\n"
+                    f"⭐ {order['quantity']} звезд отправлены @{order['recipient']}\n"
+                    f"🔗 TX: <code>{result['transaction_id'][:16]}...</code>\n\n"
+                    f"🎉 Спасибо за покупку!",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")],
+                        [InlineKeyboardButton(text="⭐ Купить еще", callback_data="menu_buy_stars")]
+                    ])
+                )
+                return True
+                
+            elif order["type"] == "premium":
+                print(f"📦 Доставка заказа #{order_id}: Premium {order['quantity']} мес. -> @{order['recipient']}")
+                
+                result = await send_premium_via_fragment(order["recipient"], order["quantity"])
+                
+                db_update_order(order_id, "completed", order["payment_method"], result["transaction_id"])
+                
+                await bot.send_message(
+                    user_id,
+                    f"✅ <b>Заказ #{order_id} выполнен!</b>\n\n"
+                    f"💎 Telegram Premium на {order['quantity']} мес. активирован для @{order['recipient']}\n"
+                    f"🔗 TX: <code>{result['transaction_id'][:16]}...</code>\n\n"
+                    f"🎉 Спасибо за покупку!",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")],
+                        [InlineKeyboardButton(text="💎 Купить еще", callback_data="menu_buy_premium")]
+                    ])
+                )
+                return True
+                
+        except Exception as e:
+            last_error = str(e)
+            print(f"❌ Попытка {attempt + 1} доставки заказа #{order_id} провалилась: {last_error}")
+            
+            if attempt < max_retries:
+                wait_time = (attempt + 1) * 3
+                print(f"🔄 Повторная попытка через {wait_time} сек...")
+                await asyncio.sleep(wait_time)
+            else:
+                if order["payment_method"] == "balance":
+                    db_add_balance(user_id, order["amount_rub"])
+                    refund_msg = f"\n\n💰 Деньги ({order['amount_rub']}₽) возвращены на ваш баланс."
+                else:
+                    refund_msg = ""
+                
+                db_update_order(order_id, "failed", order["payment_method"])
+                
+                await bot.send_message(
+                    user_id,
+                    f"❌ <b>Ошибка при обработке заказа #{order_id}</b>\n\n"
+                    f"{last_error}{refund_msg}\n\n"
+                    f"📞 Обратитесь в поддержку: @{SUPPORT_USERNAME}",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")],
+                        [InlineKeyboardButton(text="📞 Поддержка", url=f"https://t.me/{SUPPORT_USERNAME}")]
+                    ])
+                )
+                return False
 
 # ═══════════════════════════════════════════════════════════════
 #  FSM Состояния
@@ -555,13 +671,14 @@ def premium_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 def admin_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
+    kb = [
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="💰 Добавить баланс", callback_data="admin_add_balance")],
         [InlineKeyboardButton(text="🖼 Управление фото", callback_data="admin_photos")],
         [InlineKeyboardButton(text="💳 Платежи по карте", callback_data="admin_card_payments")],
-    ])
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=kb)
 
 def admin_photos_keyboard():
     photos = db_get_all_stars_photos()
@@ -612,7 +729,7 @@ def payment_action_keyboard(payment_id: int, payment_type: str):
         ])
 
 # ═══════════════════════════════════════════════════════════════
-#  Проверка подписки на канал
+#  Проверка подписки
 # ═══════════════════════════════════════════════════════════════
 
 async def check_subscription(user_id: int) -> bool:
@@ -1240,42 +1357,6 @@ async def choose_premium(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 # ═══════════════════════════════════════════════════════════════
-#  Доставка товара
-# ═══════════════════════════════════════════════════════════════
-
-async def deliver_order(order_id: int, user_id: int):
-    order = db_get_order(order_id)
-    if not order:
-        raise Exception(f"Заказ {order_id} не найден")
-    
-    if order["type"] == "stars":
-        result = await send_stars_via_fragment(order["recipient"], order["quantity"])
-        db_update_order(order_id, "completed", order["payment_method"], result["transaction_id"])
-        
-        await bot.send_message(
-            user_id,
-            f"✅ <b>Заказ #{order_id} выполнен!</b>\n\n"
-            f"⭐ {order['quantity']} звезд отправлены @{order['recipient']}\n\n"
-            f"🎉 Спасибо за покупку!",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")]
-            ])
-        )
-    elif order["type"] == "premium":
-        result = await send_premium_via_fragment(order["recipient"], order["quantity"])
-        db_update_order(order_id, "completed", order["payment_method"], result["transaction_id"])
-        
-        await bot.send_message(
-            user_id,
-            f"✅ <b>Заказ #{order_id} выполнен!</b>\n\n"
-            f"💎 Premium на {order['quantity']} мес. активирован для @{order['recipient']}\n\n"
-            f"🎉 Спасибо за покупку!",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main")]
-            ])
-        )
-
-# ═══════════════════════════════════════════════════════════════
 #  Оплата с баланса
 # ═══════════════════════════════════════════════════════════════
 
@@ -1835,7 +1916,7 @@ async def pay_crypto(cb: CallbackQuery):
         await cb.answer("❌ Ошибка создания счета", show_alert=True)
         return
     
-    db_update_order(order_id, "pending", "cryptobot", invoice["invoice_id"])
+    db_update_order(order_id, "pending", "cryptobot", str(invoice["invoice_id"]))
     ton_amount = round(order["amount_rub"] / TON_RUB, 4)
     
     text = (f"🤖 <b>Оплата через CryptoBot (Ton)</b>\n\n"
